@@ -1,17 +1,38 @@
 "use client";
 
-import { useState } from "react";
-import { ref, set, push } from "firebase/database";
+import { useRef, useState } from "react";
+import { ref, set, push, remove } from "firebase/database";
 import { db } from "../../services/firebase";
 
 export default function Motorista() {
   const [status, setStatus] = useState("Aguardando rastreamento");
+  const ultimaPosicaoRef = useRef(null);
 
-  function iniciarRastreamento() {
+  function calcularDistanciaMetros(lat1, lon1, lat2, lon2) {
+    const R = 6371000;
+    const dLat = ((lat2 - lat1) * Math.PI) / 180;
+    const dLon = ((lon2 - lon1) * Math.PI) / 180;
+
+    const a =
+      Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+      Math.cos((lat1 * Math.PI) / 180) *
+        Math.cos((lat2 * Math.PI) / 180) *
+        Math.sin(dLon / 2) *
+        Math.sin(dLon / 2);
+
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+
+    return R * c;
+  }
+
+  async function iniciarRastreamento() {
     if (!navigator.geolocation) {
       setStatus("GPS não suportado");
       return;
     }
+
+    ultimaPosicaoRef.current = null;
+    await remove(ref(db, "cargas/carga1/trajeto"));
 
     setStatus("Iniciando GPS...");
 
@@ -31,13 +52,35 @@ export default function Motorista() {
           status: "Em rota",
         });
 
-        await push(ref(db, "cargas/carga1/trajeto"), {
-          latitude,
-          longitude,
-          atualizadoEm,
-        });
+        let deveSalvarPonto = false;
 
-        setStatus("Localização enviada ✅");
+        if (!ultimaPosicaoRef.current) {
+          deveSalvarPonto = true;
+        } else {
+          const distancia = calcularDistanciaMetros(
+            ultimaPosicaoRef.current.latitude,
+            ultimaPosicaoRef.current.longitude,
+            latitude,
+            longitude
+          );
+
+          if (distancia >= 30) {
+            deveSalvarPonto = true;
+          }
+        }
+
+        if (deveSalvarPonto) {
+          await push(ref(db, "cargas/carga1/trajeto"), {
+            latitude,
+            longitude,
+            atualizadoEm,
+          });
+
+          ultimaPosicaoRef.current = { latitude, longitude };
+          setStatus("Localização enviada ✅ ponto salvo");
+        } else {
+          setStatus("Localização enviada ✅ aguardando movimento");
+        }
       },
       (error) => {
         setStatus("Erro GPS: " + error.message);
@@ -61,7 +104,7 @@ export default function Motorista() {
         Iniciar Rastreamento
       </button>
 
-      <p className="mt-6">{status}</p>
+      <p className="mt-6 text-center">{status}</p>
     </main>
   );
 }
