@@ -24,3 +24,45 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
+.input {
+  width: 100%;
+  border-radius: 0.75rem;
+  border: 1px solid #334155;
+  background: #020617;
+  padding: 1rem;
+  color: white;
+  outline: none;
+}
+
+.input::placeholder {
+  color: #94a3b8;
+}
+
+.input:focus {
+  border-color: #2563eb;
+}
+.card {
+  border-radius: 1rem;
+  border: 1px solid #1e293b;
+  background: #0f172a;
+  padding: 1.5rem;
+}
+
+.card-kpi {
+  border-radius: 1rem;
+  border: 1px solid #1e293b;
+  background: #0f172a;
+  padding: 1.25rem;
+}
+
+.btn-dark {
+  border-radius: 0.75rem;
+  background: #1e293b;
+  padding: 0.85rem;
+  font-size: 0.875rem;
+  color: white;
+}
+
+.btn-dark:hover {
+  background: #334155;
+}
