@@ -1,22 +1,29 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useParams } from "next/navigation";
 import { ref, onValue } from "firebase/database";
 import dynamic from "next/dynamic";
 import { db } from "../../../services/firebase";
 
 const MapaCarga = dynamic(() => import("../../components/MapaCarga"), {
   ssr: false,
-  loading: () => <p>Carregando mapa...</p>,
+  loading: () => (
+    <div className="bg-slate-800 rounded-2xl p-6 text-center">
+      Carregando mapa...
+    </div>
+  ),
 });
 
-export default function AcompanharCarga({ params }) {
-  const codigo = params.codigo;
+export default function AcompanharCarga() {
+  const params = useParams();
+  const codigo = params?.codigo;
 
   const [localizacao, setLocalizacao] = useState(null);
   const [trajeto, setTrajeto] = useState([]);
   const [entrega, setEntrega] = useState(null);
   const [dadosCarga, setDadosCarga] = useState(null);
+  const [geofence, setGeofence] = useState(null);
   const [carregando, setCarregando] = useState(true);
 
   useEffect(() => {
@@ -26,43 +33,49 @@ export default function AcompanharCarga({ params }) {
     const localizacaoRef = ref(db, `cargas/${codigo}/localizacao`);
     const trajetoRef = ref(db, `cargas/${codigo}/trajeto`);
     const entregaRef = ref(db, `cargas/${codigo}/entrega`);
+    const geofenceRef = ref(db, `cargas/${codigo}/geofence`);
 
-    const stop1 = onValue(dadosRef, (snapshot) => {
+    const stopDados = onValue(dadosRef, (snapshot) => {
       setDadosCarga(snapshot.exists() ? snapshot.val() : null);
       setCarregando(false);
     });
 
-    const stop2 = onValue(localizacaoRef, (snapshot) => {
+    const stopLocalizacao = onValue(localizacaoRef, (snapshot) => {
       setLocalizacao(snapshot.exists() ? snapshot.val() : null);
     });
 
-    const stop3 = onValue(trajetoRef, (snapshot) => {
+    const stopTrajeto = onValue(trajetoRef, (snapshot) => {
       setTrajeto(snapshot.exists() ? Object.values(snapshot.val()) : []);
     });
 
-    const stop4 = onValue(entregaRef, (snapshot) => {
+    const stopEntrega = onValue(entregaRef, (snapshot) => {
       setEntrega(snapshot.exists() ? snapshot.val() : null);
     });
 
+    const stopGeofence = onValue(geofenceRef, (snapshot) => {
+      setGeofence(snapshot.exists() ? snapshot.val() : null);
+    });
+
     return () => {
-      stop1();
-      stop2();
-      stop3();
-      stop4();
+      stopDados();
+      stopLocalizacao();
+      stopTrajeto();
+      stopEntrega();
+      stopGeofence();
     };
   }, [codigo]);
 
   const statusAtual = entrega
     ? "Entregue"
+    : geofence?.entrouNoDestino
+    ? "Chegou ao destino"
     : dadosCarga?.status || "Aguardando rastreamento";
 
   const etapas = [
     { nome: "Carga cadastrada", ativa: !!dadosCarga },
     {
       nome: "Aguardando coleta",
-      ativa:
-        !!dadosCarga &&
-        ["Disponível", "Aceita", "Aguardando coleta", "Em rota", "Chegou ao destino", "Entregue"].includes(statusAtual),
+      ativa: !!dadosCarga,
     },
     {
       nome: "Em rota",
@@ -70,6 +83,10 @@ export default function AcompanharCarga({ params }) {
         statusAtual === "Em rota" ||
         statusAtual === "Chegou ao destino" ||
         statusAtual === "Entregue",
+    },
+    {
+      nome: "Chegou ao destino",
+      ativa: statusAtual === "Chegou ao destino" || statusAtual === "Entregue",
     },
     {
       nome: "Entregue",
@@ -98,7 +115,7 @@ export default function AcompanharCarga({ params }) {
           </div>
         ) : (
           <>
-            <div className="bg-slate-900 rounded-2xl p-4 mb-6">
+            <section className="bg-slate-900 rounded-2xl p-4 mb-6">
               <p>
                 <strong>Código:</strong> {codigo}
               </p>
@@ -109,8 +126,10 @@ export default function AcompanharCarga({ params }) {
               </p>
 
               <p>
-                <strong>Transportadora responsável:</strong>{" "}
-                {dadosCarga.transportadoraResponsavel || dadosCarga.cliente || "-"}
+                <strong>Transportadora:</strong>{" "}
+                {dadosCarga.transportadoraResponsavel ||
+                  dadosCarga.cliente ||
+                  "-"}
               </p>
 
               <p>
@@ -122,18 +141,22 @@ export default function AcompanharCarga({ params }) {
               </p>
 
               <p>
+                <strong>Motorista:</strong> {dadosCarga.motorista || "-"}
+              </p>
+
+              <p>
                 <strong>Placa:</strong> {dadosCarga.placa || "-"}
               </p>
 
               <p>
                 <strong>Status:</strong> {statusAtual}
               </p>
-            </div>
+            </section>
 
-            <div className="bg-slate-900 rounded-2xl p-4 mb-6">
+            <section className="bg-slate-900 rounded-2xl p-4 mb-6">
               <h2 className="text-2xl font-bold mb-4">Linha do tempo</h2>
 
-              <div className="grid gap-3 md:grid-cols-4">
+              <div className="grid gap-3 md:grid-cols-5">
                 {etapas.map((etapa) => (
                   <div
                     key={etapa.nome}
@@ -147,10 +170,10 @@ export default function AcompanharCarga({ params }) {
                   </div>
                 ))}
               </div>
-            </div>
+            </section>
 
             {entrega ? (
-              <div className="bg-green-900 rounded-2xl p-6">
+              <section className="bg-green-900 rounded-2xl p-6">
                 <h2 className="text-3xl font-bold mb-4">
                   Entrega concluída ✅
                 </h2>
@@ -162,23 +185,38 @@ export default function AcompanharCarga({ params }) {
                 <p>
                   <strong>Horário:</strong> {entrega.entregueEm || "-"}
                 </p>
-              </div>
+              </section>
             ) : !localizacao ? (
-              <div className="bg-slate-900 rounded-2xl p-6">
+              <section className="bg-slate-900 rounded-2xl p-6">
                 <p>Aguardando início do rastreamento...</p>
-              </div>
+              </section>
             ) : (
-              <div className="bg-slate-900 rounded-2xl p-4">
-                <p className="mb-4">
-                  Última atualização: {localizacao.atualizadoEm || "-"}
-                </p>
+              <section className="bg-slate-900 rounded-2xl p-4">
+                <div className="mb-4 bg-slate-800 rounded-xl p-4">
+                  <p>
+                    <strong>Última atualização:</strong>{" "}
+                    {localizacao.atualizadoEm || "-"}
+                  </p>
 
-                <MapaCarga
-                  latitude={localizacao.latitude}
-                  longitude={localizacao.longitude}
-                  trajeto={trajeto}
-                />
-              </div>
+                  <p>
+                    <strong>Pontos registrados:</strong> {trajeto.length}
+                  </p>
+
+                  {geofence?.entrouNoDestino && (
+                    <p className="text-yellow-300 mt-2">
+                      📍 Caminhão chegou ao destino
+                    </p>
+                  )}
+                </div>
+
+                <div className="w-full overflow-hidden rounded-2xl">
+                  <MapaCarga
+                    latitude={localizacao.latitude}
+                    longitude={localizacao.longitude}
+                    trajeto={trajeto}
+                  />
+                </div>
+              </section>
             )}
           </>
         )}

@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { ref, onValue, remove } from "firebase/database";
+import { ref, onValue, remove, set } from "firebase/database";
 import dynamic from "next/dynamic";
 import { db } from "../../services/firebase";
 
@@ -17,6 +17,20 @@ export default function Admin() {
   const [trajeto, setTrajeto] = useState([]);
   const [entrega, setEntrega] = useState(null);
   const [geofence, setGeofence] = useState(null);
+  const [mostrarFormulario, setMostrarFormulario] = useState(false);
+
+  const [novaCarga, setNovaCarga] = useState({
+    codigo: "",
+    numeroCarga: "",
+    cliente: "",
+    motorista: "",
+    placa: "",
+    origem: "",
+    destino: "",
+    localColeta: "",
+    produto: "",
+    transportadoraResponsavel: "",
+  });
 
   const agora = Date.now();
 
@@ -202,6 +216,66 @@ export default function Admin() {
     };
   }, [cargaSelecionada]);
 
+  function motoristaEstaOnline(carga) {
+    const ultimaAtualizacao =
+      carga.localizacao?.atualizadoEmMs ||
+      carga.localizacao?.timestamp ||
+      carga.localizacao?.ultimaAtualizacao;
+
+    if (!ultimaAtualizacao) return false;
+
+    return Date.now() - Number(ultimaAtualizacao) <= 2 * 60 * 1000;
+  }
+
+  function gerarCodigoCarga() {
+    return String(Date.now()).slice(-6);
+  }
+
+  async function cadastrarNovaCarga(e) {
+    e.preventDefault();
+
+    const codigoFinal = novaCarga.codigo.trim() || gerarCodigoCarga();
+
+    if (!novaCarga.origem.trim() || !novaCarga.destino.trim()) {
+      alert("Preencha pelo menos origem e destino.");
+      return;
+    }
+
+    await set(ref(db, `cargas/${codigoFinal}/dados`), {
+      numeroCarga: novaCarga.numeroCarga.trim(),
+      cliente: novaCarga.cliente.trim(),
+      motorista: novaCarga.motorista.trim(),
+      placa: novaCarga.placa.trim(),
+      origem: novaCarga.origem.trim(),
+      destino: novaCarga.destino.trim(),
+      localColeta: novaCarga.localColeta.trim(),
+      produto: novaCarga.produto.trim(),
+      transportadoraResponsavel:
+        novaCarga.transportadoraResponsavel.trim(),
+      status: "Disponível",
+      criadoEm: new Date().toLocaleString("pt-BR"),
+      criadoEmMs: Date.now(),
+    });
+
+    setCargaSelecionada(codigoFinal);
+    setMostrarFormulario(false);
+
+    setNovaCarga({
+      codigo: "",
+      numeroCarga: "",
+      cliente: "",
+      motorista: "",
+      placa: "",
+      origem: "",
+      destino: "",
+      localColeta: "",
+      produto: "",
+      transportadoraResponsavel: "",
+    });
+
+    alert(`Carga ${codigoFinal} cadastrada com sucesso.`);
+  }
+
   async function limparTestesAntigos() {
     const confirmar = window.confirm(
       "Isso vai apagar cargas vazias/sem dados reais. Deseja continuar?"
@@ -229,17 +303,6 @@ export default function Admin() {
     alert("Limpeza concluída.");
   }
 
-  function motoristaEstaOnline(carga) {
-    const ultimaAtualizacao =
-      carga.localizacao?.atualizadoEmMs ||
-      carga.localizacao?.timestamp ||
-      carga.localizacao?.ultimaAtualizacao;
-
-    if (!ultimaAtualizacao) return false;
-
-    return Date.now() - Number(ultimaAtualizacao) <= 2 * 60 * 1000;
-  }
-
   function CardCarga({ carga, historico = false }) {
     const selecionada = cargaSelecionada === carga.codigo;
 
@@ -252,6 +315,7 @@ export default function Admin() {
       >
         <div className="flex items-center justify-between gap-2 mb-2">
           <p className="font-bold">{carga.codigo}</p>
+
           <span
             className={`text-xs rounded-full px-3 py-1 ${
               historico ? "bg-green-700" : "bg-orange-600"
@@ -262,8 +326,7 @@ export default function Admin() {
         </div>
 
         <p>
-          <strong>Rota:</strong>{" "}
-          {carga.origem || carga.cliente || "-"} →{" "}
+          <strong>Rota:</strong> {carga.origem || carga.cliente || "-"} →{" "}
           {carga.destino || carga.produto || "-"}
         </p>
 
@@ -272,7 +335,15 @@ export default function Admin() {
         </p>
 
         <p>
+          <strong>Motorista:</strong> {carga.motorista || "-"}
+        </p>
+
+        <p>
           <strong>Status:</strong> {carga.status || "-"}
+        </p>
+
+        <p className="mt-2 text-sm text-blue-300 break-all">
+          Link: /acompanhar/{carga.codigo}
         </p>
 
         {carga.localizacao && !historico && (
@@ -303,6 +374,7 @@ export default function Admin() {
               <strong>✅ Recebido por:</strong>{" "}
               {carga.entrega.recebedor || "-"}
             </p>
+
             <p>
               <strong>Horário:</strong> {carga.entrega.entregueEm || "-"}
             </p>
@@ -337,18 +409,136 @@ export default function Admin() {
           <h1 className="text-3xl md:text-4xl font-bold">
             Painel da Transportadora
           </h1>
+
           <p className="text-slate-400 mt-1">
             Monitoramento de cargas em tempo real
           </p>
         </div>
 
-        <button
-          onClick={limparTestesAntigos}
-          className="bg-red-700 hover:bg-red-800 rounded-xl px-4 py-3 font-semibold"
-        >
-          Limpar testes vazios
-        </button>
+        <div className="flex flex-col md:flex-row gap-3">
+          <button
+            onClick={() => setMostrarFormulario(!mostrarFormulario)}
+            className="bg-green-600 hover:bg-green-700 rounded-xl px-4 py-3 font-semibold"
+          >
+            {mostrarFormulario ? "Fechar cadastro" : "Adicionar nova carga"}
+          </button>
+
+          <button
+            onClick={limparTestesAntigos}
+            className="bg-red-700 hover:bg-red-800 rounded-xl px-4 py-3 font-semibold"
+          >
+            Limpar testes vazios
+          </button>
+        </div>
       </div>
+
+      {mostrarFormulario && (
+        <section className="mb-6 bg-slate-900 rounded-2xl p-4">
+          <h2 className="text-2xl font-bold mb-4">Cadastrar nova carga</h2>
+
+          <form onSubmit={cadastrarNovaCarga} className="grid gap-4 md:grid-cols-2">
+            <input
+              value={novaCarga.codigo}
+              onChange={(e) =>
+                setNovaCarga({ ...novaCarga, codigo: e.target.value })
+              }
+              placeholder="Código da carga (opcional)"
+              className="bg-slate-800 rounded-xl p-3 outline-none"
+            />
+
+            <input
+              value={novaCarga.numeroCarga}
+              onChange={(e) =>
+                setNovaCarga({ ...novaCarga, numeroCarga: e.target.value })
+              }
+              placeholder="Número da carga / pedido"
+              className="bg-slate-800 rounded-xl p-3 outline-none"
+            />
+
+            <input
+              value={novaCarga.cliente}
+              onChange={(e) =>
+                setNovaCarga({ ...novaCarga, cliente: e.target.value })
+              }
+              placeholder="Cliente"
+              className="bg-slate-800 rounded-xl p-3 outline-none"
+            />
+
+            <input
+              value={novaCarga.transportadoraResponsavel}
+              onChange={(e) =>
+                setNovaCarga({
+                  ...novaCarga,
+                  transportadoraResponsavel: e.target.value,
+                })
+              }
+              placeholder="Transportadora responsável"
+              className="bg-slate-800 rounded-xl p-3 outline-none"
+            />
+
+            <input
+              value={novaCarga.motorista}
+              onChange={(e) =>
+                setNovaCarga({ ...novaCarga, motorista: e.target.value })
+              }
+              placeholder="Motorista"
+              className="bg-slate-800 rounded-xl p-3 outline-none"
+            />
+
+            <input
+              value={novaCarga.placa}
+              onChange={(e) =>
+                setNovaCarga({ ...novaCarga, placa: e.target.value })
+              }
+              placeholder="Placa"
+              className="bg-slate-800 rounded-xl p-3 outline-none"
+            />
+
+            <input
+              value={novaCarga.origem}
+              onChange={(e) =>
+                setNovaCarga({ ...novaCarga, origem: e.target.value })
+              }
+              placeholder="Origem *"
+              className="bg-slate-800 rounded-xl p-3 outline-none"
+            />
+
+            <input
+              value={novaCarga.destino}
+              onChange={(e) =>
+                setNovaCarga({ ...novaCarga, destino: e.target.value })
+              }
+              placeholder="Destino *"
+              className="bg-slate-800 rounded-xl p-3 outline-none"
+            />
+
+            <input
+              value={novaCarga.localColeta}
+              onChange={(e) =>
+                setNovaCarga({ ...novaCarga, localColeta: e.target.value })
+              }
+              placeholder="Local de coleta"
+              className="bg-slate-800 rounded-xl p-3 outline-none"
+            />
+
+            <input
+              value={novaCarga.produto}
+              onChange={(e) =>
+                setNovaCarga({ ...novaCarga, produto: e.target.value })
+              }
+              placeholder="Produto / descrição da carga"
+              className="bg-slate-800 rounded-xl p-3 outline-none"
+            />
+
+            <button
+              type="submit"
+              className="md:col-span-2 bg-blue-600 hover:bg-blue-700 rounded-xl p-4 font-bold"
+            >
+              Salvar carga
+            </button>
+          </form>
+        </section>
+      )}
 
       <div className="grid gap-4 md:grid-cols-6 mb-6">
         <div className="bg-slate-900 rounded-2xl p-4">
@@ -441,9 +631,11 @@ export default function Admin() {
                 <h3 className="text-xl font-bold mb-2">
                   Entrega concluída ✅
                 </h3>
+
                 <p>
                   <strong>Recebido por:</strong> {entrega.recebedor || "-"}
                 </p>
+
                 <p>
                   <strong>Horário:</strong> {entrega.entregueEm || "-"}
                 </p>
