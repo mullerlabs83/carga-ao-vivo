@@ -26,8 +26,11 @@ export default function AcompanharCarga() {
   const [geofence, setGeofence] = useState(null);
   const [carregando, setCarregando] = useState(true);
 
-  useEffect(() => {
-    if (!codigo) return;
+ useEffect(() => {
+  if (!codigo) {
+    setCarregando(false);
+    return;
+  }
 
     const dadosRef = ref(db, `cargas/${codigo}/dados`);
     const localizacaoRef = ref(db, `cargas/${codigo}/localizacao`);
@@ -35,10 +38,18 @@ export default function AcompanharCarga() {
     const entregaRef = ref(db, `cargas/${codigo}/entrega`);
     const geofenceRef = ref(db, `cargas/${codigo}/geofence`);
 
-    const stopDados = onValue(dadosRef, (snapshot) => {
-      setDadosCarga(snapshot.exists() ? snapshot.val() : null);
-      setCarregando(false);
-    });
+  const stopDados = onValue(
+  dadosRef,
+  (snapshot) => {
+    setDadosCarga(snapshot.exists() ? snapshot.val() : null);
+    setCarregando(false);
+  },
+  (error) => {
+    console.error("Erro ao carregar dados da carga:", error);
+    setDadosCarga(null);
+    setCarregando(false);
+  }
+);
 
     const stopLocalizacao = onValue(localizacaoRef, (snapshot) => {
       setLocalizacao(snapshot.exists() ? snapshot.val() : null);
