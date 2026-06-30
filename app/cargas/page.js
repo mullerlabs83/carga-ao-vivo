@@ -33,6 +33,11 @@ export default function CargasPage() {
       raioMaximo: Number(raioMaximo),
       status: "Disponível",
       motoristaAceito: null,
+      rastreamentoOnline: false,
+codigoRastreamento: null,
+ultimaLocalizacao: null,
+ultimaAtualizacao: null,
+statusRastreamento: "Desativado",
       criadaEm: new Date().toLocaleString("pt-BR"),
     };
 
@@ -49,7 +54,22 @@ export default function CargasPage() {
     const novasCargas = cargas.filter((carga) => carga.id !== id);
     salvarCargas(novasCargas);
   }
+function ativarRastreamento(id) {
+  const novasCargas = cargas.map((carga) => {
+    if (carga.id === id) {
+      return {
+        ...carga,
+        rastreamentoOnline: true,
+        codigoRastreamento: String(carga.id),
+        statusRastreamento: "Aguardando motorista iniciar",
+      };
+    }
 
+    return carga;
+  });
+
+  salvarCargas(novasCargas);
+}
   return (
     <main className="min-h-screen bg-slate-950 text-white p-6">
       <div className="max-w-4xl mx-auto">
@@ -155,7 +175,53 @@ export default function CargasPage() {
                   <p className="text-xs text-slate-500 mt-3">
                     Criada em: {carga.criadaEm}
                   </p>
+{!carga.rastreamentoOnline ? (
+  <button
+    onClick={() => ativarRastreamento(carga.id)}
+    className="mt-4 bg-green-600 hover:bg-green-700 rounded-xl px-4 py-2 font-semibold"
+  >
+    Ativar rastreamento online
+  </button>
+) : (
+  <div className="mt-4 bg-slate-800 p-3 rounded-xl">
+    <p className="text-green-400 font-semibold">
+      Rastreamento online ativo
+    </p>
 
+    <p className="text-sm mt-2">
+      Código: {carga.codigoRastreamento}
+    </p>
+<p className="text-xs text-slate-400 mt-2 break-all">
+  Link: {typeof window !== "undefined" ? `${window.location.origin}/acompanhar/${carga.codigoRastreamento}` : ""}
+</p>
+
+<div className="flex flex-col sm:flex-row gap-2 mt-3">
+  <button
+    onClick={() => {
+      const link = `${window.location.origin}/acompanhar/${carga.codigoRastreamento}`;
+      navigator.clipboard.writeText(link);
+      alert("Link copiado!");
+    }}
+    className="bg-blue-600 hover:bg-blue-700 rounded-xl px-4 py-2 font-semibold"
+  >
+    Copiar link
+  </button>
+
+  <a
+    href={`https://wa.me/?text=${encodeURIComponent(
+      `Acompanhe sua carga em tempo real: ${typeof window !== "undefined" ? `${window.location.origin}/acompanhar/${carga.codigoRastreamento}` : ""}`
+    )}`}
+    target="_blank"
+    className="bg-green-600 hover:bg-green-700 rounded-xl px-4 py-2 font-semibold text-center"
+  >
+    Enviar pelo WhatsApp
+  </a>
+</div>
+    <p className="text-xs text-slate-400 mt-1">
+      {carga.statusRastreamento}
+    </p>
+  </div>
+)}
                   <button
                     onClick={() => excluirCarga(carga.id)}
                     className="mt-4 bg-red-600 hover:bg-red-700 rounded-xl px-4 py-2 font-semibold"

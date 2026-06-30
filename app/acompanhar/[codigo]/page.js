@@ -48,7 +48,9 @@ export default function AcompanharCarga({ params }) {
     };
   }, [codigo]);
 
-  const statusAtual = entrega ? "Entregue" : dadosCarga?.status || "Aguardando coleta";
+  const statusAtual = entrega
+    ? "Entregue"
+    : dadosCarga?.status || "Aguardando coleta";
 
   const etapas = [
     { nome: "Carga cadastrada", ativa: true },
@@ -79,11 +81,37 @@ export default function AcompanharCarga({ params }) {
         </h1>
 
         <div className="bg-slate-900 rounded-2xl p-4 mb-6">
-          <p><strong>Código:</strong> {codigo}</p>
-          <p><strong>Cliente:</strong> {dadosCarga?.cliente || "-"}</p>
-          <p><strong>Motorista:</strong> {dadosCarga?.motorista || "-"}</p>
-          <p><strong>Produto:</strong> {dadosCarga?.produto || "-"}</p>
-          <p><strong>Status:</strong> {statusAtual}</p>
+          <p>
+            <strong>Código:</strong> {codigo}
+          </p>
+
+          <p>
+            <strong>Carga / Pedido:</strong>{" "}
+            {dadosCarga?.numeroCarga || dadosCarga?.produto || "-"}
+          </p>
+
+          <p>
+            <strong>Transportadora responsável:</strong>{" "}
+            {dadosCarga?.transportadoraResponsavel ||
+              dadosCarga?.cliente ||
+              "-"}
+          </p>
+
+          <p>
+            <strong>Origem:</strong> {dadosCarga?.origem || "-"}
+          </p>
+
+          <p>
+            <strong>Destino:</strong> {dadosCarga?.destino || "-"}
+          </p>
+
+          <p>
+            <strong>Placa:</strong> {dadosCarga?.placa || "-"}
+          </p>
+
+          <p>
+            <strong>Status:</strong> {statusAtual}
+          </p>
         </div>
 
         <div className="bg-slate-900 rounded-2xl p-4 mb-6">
@@ -111,8 +139,13 @@ export default function AcompanharCarga({ params }) {
               Entrega concluída ✅
             </h2>
 
-            <p><strong>Recebido por:</strong> {entrega.recebedor}</p>
-            <p><strong>Horário:</strong> {entrega.entregueEm}</p>
+            <p>
+              <strong>Recebido por:</strong> {entrega.recebedor}
+            </p>
+
+            <p>
+              <strong>Horário:</strong> {entrega.entregueEm}
+            </p>
           </div>
         ) : !localizacao ? (
           <div className="bg-slate-900 rounded-2xl p-6">
