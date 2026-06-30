@@ -16,22 +16,61 @@ export default function Admin() {
   const [localizacao, setLocalizacao] = useState(null);
   const [trajeto, setTrajeto] = useState([]);
   const [entrega, setEntrega] = useState(null);
+  const [geofence, setGeofence] = useState(null);
 
   const agora = Date.now();
+
+  const cargaAtual = listaCargas.find(
+    (carga) => carga.codigo === cargaSelecionada
+  );
+
+  let distanciaDestino = null;
+
+  if (
+    localizacao &&
+    cargaAtual?.destinoCoordenadas &&
+    localizacao.latitude &&
+    localizacao.longitude
+  ) {
+    distanciaDestino = calcularDistanciaKm(
+      localizacao.latitude,
+      localizacao.longitude,
+      cargaAtual.destinoCoordenadas.latitude,
+      cargaAtual.destinoCoordenadas.longitude
+    );
+  }
 
   const cargasAtivas = listaCargas.filter((carga) => !carga.entrega);
   const historicoEntregas = listaCargas.filter((carga) => carga.entrega);
 
-  const motoristasOnline = cargasAtivas.filter((carga) => {
-    const ultimaAtualizacao =
-      carga.localizacao?.atualizadoEmMs ||
-      carga.localizacao?.timestamp ||
-      carga.localizacao?.ultimaAtualizacao;
+  const motoristasOnline = cargasAtivas.filter((carga) =>
+    motoristaEstaOnline(carga)
+  ).length;
 
-    if (!ultimaAtualizacao) return false;
+  const geofencesAtivas = cargasAtivas.filter(
+    (carga) => carga.geofence?.ativa
+  ).length;
 
-    return agora - Number(ultimaAtualizacao) <= 2 * 60 * 1000;
-  }).length;
+  const chegaramDestino = cargasAtivas.filter(
+    (carga) => carga.geofence?.entrouNoDestino
+  ).length;
+
+  function calcularDistanciaKm(lat1, lon1, lat2, lon2) {
+    const R = 6371;
+    const dLat = ((lat2 - lat1) * Math.PI) / 180;
+    const dLon = ((lon2 - lon1) * Math.PI) / 180;
+
+    const a =
+      Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+      Math.cos((lat1 * Math.PI) / 180) *
+        Math.cos((lat2 * Math.PI) / 180) *
+        Math.sin(dLon / 2) *
+        Math.sin(dLon / 2);
+
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+
+    return R * c;
+  }
 
   function dataEntregaMs(carga) {
     if (carga.entrega?.entregueEmMs) return Number(carga.entrega.entregueEmMs);
@@ -100,13 +139,21 @@ export default function Admin() {
             localizacao: dadosCarga?.localizacao || null,
             trajeto: dadosCarga?.trajeto || null,
             entrega: dadosCarga?.entrega || null,
+            geofence: dadosCarga?.geofence || null,
+            destinoCoordenadas: dadosCarga?.destinoCoordenadas || null,
           }))
           .filter((carga) => {
-            const temDadosReais =
-              carga.cliente || carga.motorista || carga.produto;
-
-            return temDadosReais || carga.entrega;
-          });
+            return (
+              carga.origem ||
+              carga.destino ||
+              carga.localColeta ||
+              carga.cliente ||
+              carga.motorista ||
+              carga.produto ||
+              carga.entrega
+            );
+          })
+          .sort((a, b) => Number(b.codigo) - Number(a.codigo));
 
         setListaCargas(lista);
 
@@ -129,6 +176,7 @@ export default function Admin() {
     const localizacaoRef = ref(db, `cargas/${cargaSelecionada}/localizacao`);
     const trajetoRef = ref(db, `cargas/${cargaSelecionada}/trajeto`);
     const entregaRef = ref(db, `cargas/${cargaSelecionada}/entrega`);
+    const geofenceRef = ref(db, `cargas/${cargaSelecionada}/geofence`);
 
     const pararLocalizacao = onValue(localizacaoRef, (snapshot) => {
       setLocalizacao(snapshot.exists() ? snapshot.val() : null);
@@ -142,22 +190,30 @@ export default function Admin() {
       setEntrega(snapshot.exists() ? snapshot.val() : null);
     });
 
+    const pararGeofence = onValue(geofenceRef, (snapshot) => {
+      setGeofence(snapshot.exists() ? snapshot.val() : null);
+    });
+
     return () => {
       pararLocalizacao();
       pararTrajeto();
       pararEntrega();
+      pararGeofence();
     };
   }, [cargaSelecionada]);
 
   async function limparTestesAntigos() {
     const confirmar = window.confirm(
-      "Isso vai apagar apenas cargas vazias/sem dados reais. Deseja continuar?"
+      "Isso vai apagar cargas vazias/sem dados reais. Deseja continuar?"
     );
 
     if (!confirmar) return;
 
     const cargasVazias = listaCargas.filter((carga) => {
       return (
+        !carga.origem &&
+        !carga.destino &&
+        !carga.localColeta &&
         !carga.cliente &&
         !carga.motorista &&
         !carga.produto &&
@@ -171,6 +227,17 @@ export default function Admin() {
     }
 
     alert("Limpeza concluída.");
+  }
+
+  function motoristaEstaOnline(carga) {
+    const ultimaAtualizacao =
+      carga.localizacao?.atualizadoEmMs ||
+      carga.localizacao?.timestamp ||
+      carga.localizacao?.ultimaAtualizacao;
+
+    if (!ultimaAtualizacao) return false;
+
+    return Date.now() - Number(ultimaAtualizacao) <= 2 * 60 * 1000;
   }
 
   function CardCarga({ carga, historico = false }) {
@@ -195,14 +262,15 @@ export default function Admin() {
         </div>
 
         <p>
-          <strong>Cliente:</strong> {carga.cliente || "-"}
+          <strong>Rota:</strong>{" "}
+          {carga.origem || carga.cliente || "-"} →{" "}
+          {carga.destino || carga.produto || "-"}
         </p>
+
         <p>
-          <strong>Motorista:</strong> {carga.motorista || "-"}
+          <strong>Coleta:</strong> {carga.localColeta || "-"}
         </p>
-        <p>
-          <strong>Produto:</strong> {carga.produto || "-"}
-        </p>
+
         <p>
           <strong>Status:</strong> {carga.status || "-"}
         </p>
@@ -210,6 +278,22 @@ export default function Admin() {
         {carga.localizacao && !historico && (
           <p className="mt-2 text-sm">
             {motoristaEstaOnline(carga) ? "🟢 GPS online" : "🔴 GPS offline"}
+          </p>
+        )}
+
+        {carga.geofence?.ativa && !historico && (
+          <p className="mt-1 text-sm text-green-300">🟢 Geofence ativa</p>
+        )}
+
+        {carga.geofence?.entrouNoDestino && !carga.entrega && (
+          <p className="mt-1 text-sm text-yellow-300">
+            📍 Chegou ao destino
+          </p>
+        )}
+
+        {carga.geofence?.entregaAutomatica && (
+          <p className="mt-1 text-sm text-green-300">
+            ✅ Entrega automática
           </p>
         )}
 
@@ -226,17 +310,6 @@ export default function Admin() {
         )}
       </button>
     );
-  }
-
-  function motoristaEstaOnline(carga) {
-    const ultimaAtualizacao =
-      carga.localizacao?.atualizadoEmMs ||
-      carga.localizacao?.timestamp ||
-      carga.localizacao?.ultimaAtualizacao;
-
-    if (!ultimaAtualizacao) return false;
-
-    return Date.now() - Number(ultimaAtualizacao) <= 2 * 60 * 1000;
   }
 
   function SecaoHistorico({ titulo, entregas }) {
@@ -277,30 +350,44 @@ export default function Admin() {
         </button>
       </div>
 
-      <div className="grid gap-4 md:grid-cols-4 mb-6">
+      <div className="grid gap-4 md:grid-cols-6 mb-6">
         <div className="bg-slate-900 rounded-2xl p-4">
-          <p className="text-slate-400">Total de cargas</p>
+          <p className="text-slate-400">Total</p>
           <p className="text-3xl font-bold">{listaCargas.length}</p>
         </div>
 
         <div className="bg-slate-900 rounded-2xl p-4">
-          <p className="text-slate-400">Cargas ativas</p>
+          <p className="text-slate-400">Ativas</p>
           <p className="text-3xl font-bold text-orange-400">
             {cargasAtivas.length}
           </p>
         </div>
 
         <div className="bg-slate-900 rounded-2xl p-4">
-          <p className="text-slate-400">Entregas concluídas</p>
+          <p className="text-slate-400">Entregues</p>
           <p className="text-3xl font-bold text-green-400">
             {historicoEntregas.length}
           </p>
         </div>
 
         <div className="bg-slate-900 rounded-2xl p-4">
-          <p className="text-slate-400">Motoristas online</p>
+          <p className="text-slate-400">Online</p>
           <p className="text-3xl font-bold text-blue-400">
             {motoristasOnline}
+          </p>
+        </div>
+
+        <div className="bg-slate-900 rounded-2xl p-4">
+          <p className="text-slate-400">Geofence</p>
+          <p className="text-3xl font-bold text-green-400">
+            {geofencesAtivas}
+          </p>
+        </div>
+
+        <div className="bg-slate-900 rounded-2xl p-4">
+          <p className="text-slate-400">No destino</p>
+          <p className="text-3xl font-bold text-yellow-400">
+            {chegaramDestino}
           </p>
         </div>
       </div>
@@ -363,6 +450,42 @@ export default function Admin() {
               </div>
             )}
 
+            {geofence && (
+              <div className="mb-4 bg-slate-800 rounded-xl p-4 grid gap-2 md:grid-cols-2">
+                <p>
+                  <strong>Geofence:</strong>{" "}
+                  {geofence.ativa ? "🟢 Ativa" : "⚪ Inativa"}
+                </p>
+
+                <p>
+                  <strong>Raio:</strong> {geofence.raioMetros || 500} m
+                </p>
+
+                <p>
+                  <strong>Chegada:</strong>{" "}
+                  {geofence.entrouNoDestino ? "📍 Detectada" : "Aguardando"}
+                </p>
+
+                <p>
+                  <strong>Automática:</strong>{" "}
+                  {geofence.entregaAutomatica ? "✅ Sim" : "Não"}
+                </p>
+
+                {geofence.horarioEntradaDestino && (
+                  <p>
+                    <strong>Entrada:</strong>{" "}
+                    {geofence.horarioEntradaDestino}
+                  </p>
+                )}
+
+                {geofence.horarioSaidaDestino && (
+                  <p>
+                    <strong>Saída:</strong> {geofence.horarioSaidaDestino}
+                  </p>
+                )}
+              </div>
+            )}
+
             {!localizacao ? (
               <p className="text-slate-400">
                 Aguardando rastreamento dessa carga...
@@ -373,25 +496,29 @@ export default function Admin() {
                   <p>
                     <strong>Status:</strong> {localizacao.status || "-"}
                   </p>
-                  <p>
-                    <strong>Motorista:</strong>{" "}
-                    {localizacao.motorista || "-"}
-                  </p>
-                  <p>
-                    <strong>Veículo:</strong> {localizacao.veiculo || "-"}
-                  </p>
-                  <p>
-                    <strong>Carga:</strong> {localizacao.carga || "-"}
-                  </p>
+
                   <p>
                     <strong>Pontos registrados:</strong> {trajeto.length}
                   </p>
+
+                  <p>
+                    <strong>Última atualização:</strong>{" "}
+                    {localizacao.atualizadoEm || "-"}
+                  </p>
+
                   <p>
                     <strong>GPS:</strong>{" "}
                     {motoristaEstaOnline({ localizacao })
                       ? "🟢 Online"
                       : "🔴 Offline"}
                   </p>
+
+                  {distanciaDestino !== null && (
+                    <p>
+                      <strong>Distância até destino:</strong>{" "}
+                      {distanciaDestino.toFixed(2)} km
+                    </p>
+                  )}
                 </div>
 
                 <MapaCarga
