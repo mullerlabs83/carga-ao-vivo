@@ -23,7 +23,7 @@ const distanciasSimuladas = {
   },
 };
 
-function normalizar(texto) {
+function normalizar(texto = "") {
   return texto
     .toLowerCase()
     .trim()
@@ -85,8 +85,13 @@ export default function MotoristaPage() {
   const [statusGps, setStatusGps] = useState("");
   const [enviandoGps, setEnviandoGps] = useState(false);
   const [rastreamentoAutomatico, setRastreamentoAutomatico] = useState(false);
-const [distanciaDestinoAtual, setDistanciaDestinoAtual] = useState(null);
-  const intervaloRef = useRef(null);
+  const [distanciaDestinoAtual, setDistanciaDestinoAtual] = useState(null);
+  const [ultimaLatitude, setUltimaLatitude] = useState(null);
+  const [ultimaLongitude, setUltimaLongitude] = useState(null);
+  const [ultimaPrecisao, setUltimaPrecisao] = useState(null);
+  const [ultimaVelocidade, setUltimaVelocidade] = useState(null);
+
+  const watchIdRef = useRef(null);
 
   useEffect(() => {
     const cargasRef = ref(db, "cargas");
@@ -117,8 +122,9 @@ const [distanciaDestinoAtual, setDistanciaDestinoAtual] = useState(null);
     return () => {
       parar();
 
-      if (intervaloRef.current) {
-        clearInterval(intervaloRef.current);
+      if (watchIdRef.current !== null && navigator.geolocation) {
+        navigator.geolocation.clearWatch(watchIdRef.current);
+        watchIdRef.current = null;
       }
     };
   }, []);
@@ -144,10 +150,13 @@ const [distanciaDestinoAtual, setDistanciaDestinoAtual] = useState(null);
       geofence: dados?.geofence || null,
       destinoCoordenadas: dados?.destinoCoordenadas || null,
       entrega: dados?.entrega || null,
+      localizacao: dados?.localizacao || null,
     });
   }
 
   async function verificarGeofence(latitude, longitude, atualizadoEm) {
+    if (!codigoRastreamento) return;
+
     const cargaSnapshot = await get(ref(db, `cargas/${codigoRastreamento}`));
 
     if (!cargaSnapshot.exists()) return;
@@ -159,6 +168,7 @@ const [distanciaDestinoAtual, setDistanciaDestinoAtual] = useState(null);
     }
 
     if (carga?.entrega) {
+      pararRastreamentoAutomatico();
       return;
     }
 
@@ -168,9 +178,14 @@ const [distanciaDestinoAtual, setDistanciaDestinoAtual] = useState(null);
       carga.destinoCoordenadas.latitude,
       carga.destinoCoordenadas.longitude
     );
-setDistanciaDestinoAtual(distanciaDestino);
-    const raioMetros = carga.geofence.raioMetros || 500;
-    const dentroGeofence = distanciaDestino <= raioMetros;
+
+    setDistanciaDestinoAtual(distanciaDestino);
+
+    const raioEntradaMetros = carga.geofence.raioMetros || 1000;
+    const raioSaidaMetros = carga.geofence.raioSaidaMetros || raioEntradaMetros + 500;
+
+    const dentroGeofence = distanciaDestino <= raioEntradaMetros;
+    const saiuDaGeofence = distanciaDestino >= raioSaidaMetros;
 
     if (dentroGeofence && !carga.geofence.entrouNoDestino) {
       await set(ref(db, `cargas/${codigoRastreamento}/geofence`), {
@@ -179,6 +194,7 @@ setDistanciaDestinoAtual(distanciaDestino);
         saiuDoDestino: false,
         entregaAutomatica: false,
         horarioEntradaDestino: atualizadoEm,
+        distanciaEntradaMetros: Math.round(distanciaDestino),
       });
 
       await set(
@@ -187,16 +203,17 @@ setDistanciaDestinoAtual(distanciaDestino);
       );
 
       setStatusGps(
-        `📍 Chegou ao destino. Distância aproximada: ${Math.round(
+        `📍 Chegada detectada no destino. Distância: ${Math.round(
           distanciaDestino
         )} m`
       );
 
+      buscarRastreamento();
       return;
     }
 
     if (
-      !dentroGeofence &&
+      saiuDaGeofence &&
       carga.geofence.entrouNoDestino &&
       !carga.geofence.saiuDoDestino &&
       !carga.geofence.entregaAutomatica
@@ -206,6 +223,7 @@ setDistanciaDestinoAtual(distanciaDestino);
         saiuDoDestino: true,
         entregaAutomatica: true,
         horarioSaidaDestino: atualizadoEm,
+        distanciaSaidaMetros: Math.round(distanciaDestino),
       });
 
       await set(ref(db, `cargas/${codigoRastreamento}/entrega`), {
@@ -223,7 +241,62 @@ setDistanciaDestinoAtual(distanciaDestino);
       pararRastreamentoAutomatico();
 
       setStatusGps("✅ Entrega finalizada automaticamente por geofence.");
+      buscarRastreamento();
     }
+  }
+
+  async function salvarLocalizacao(posicao, statusNovo = "Em rota") {
+    if (!codigoRastreamento) return;
+
+    const latitude = posicao.coords.latitude;
+    const longitude = posicao.coords.longitude;
+    const precisao = posicao.coords.accuracy || null;
+    const velocidade = posicao.coords.speed || null;
+    const atualizadoEm = new Date().toLocaleString("pt-BR");
+    const timestamp = Date.now();
+
+    setUltimaLatitude(latitude);
+    setUltimaLongitude(longitude);
+    setUltimaPrecisao(precisao);
+    setUltimaVelocidade(velocidade);
+
+    await set(ref(db, `cargas/${codigoRastreamento}/localizacao`), {
+      latitude,
+      longitude,
+      precisao,
+      velocidade,
+      atualizadoEm,
+      timestamp,
+    });
+
+    await push(ref(db, `cargas/${codigoRastreamento}/trajeto`), {
+      latitude,
+      longitude,
+      precisao,
+      velocidade,
+      atualizadoEm,
+      timestamp,
+    });
+
+    await verificarGeofence(latitude, longitude, atualizadoEm);
+
+    const cargaSnapshot = await get(ref(db, `cargas/${codigoRastreamento}`));
+    const cargaAtual = cargaSnapshot.exists() ? cargaSnapshot.val() : null;
+
+    if (
+      cargaAtual &&
+      !cargaAtual?.entrega &&
+      cargaAtual?.dados?.status !== "Chegou ao destino"
+    ) {
+      await set(
+        ref(db, `cargas/${codigoRastreamento}/dados/status`),
+        statusNovo
+      );
+
+      setStatusGps(`📡 Localização enviada: ${atualizadoEm}`);
+    }
+
+    buscarRastreamento();
   }
 
   function enviarLocalizacao(statusNovo = "Em rota") {
@@ -242,46 +315,11 @@ setDistanciaDestinoAtual(distanciaDestino);
 
     navigator.geolocation.getCurrentPosition(
       async (posicao) => {
-        const latitude = posicao.coords.latitude;
-        const longitude = posicao.coords.longitude;
-        const atualizadoEm = new Date().toLocaleString("pt-BR");
-        const timestamp = Date.now();
-
-        await set(ref(db, `cargas/${codigoRastreamento}/localizacao`), {
-          latitude,
-          longitude,
-          atualizadoEm,
-          timestamp,
-        });
-
-        await push(ref(db, `cargas/${codigoRastreamento}/trajeto`), {
-          latitude,
-          longitude,
-          atualizadoEm,
-          timestamp,
-        });
-
-        await verificarGeofence(latitude, longitude, atualizadoEm);
-
-        const cargaSnapshot = await get(ref(db, `cargas/${codigoRastreamento}`));
-        const cargaAtual = cargaSnapshot.exists() ? cargaSnapshot.val() : null;
-
-        if (!cargaAtual?.entrega && cargaAtual?.dados?.status !== "Chegou ao destino") {
-          await set(
-            ref(db, `cargas/${codigoRastreamento}/dados/status`),
-            statusNovo
-          );
-
-          setStatusGps(`Localização enviada: ${atualizadoEm}`);
-        }
-
+        await salvarLocalizacao(posicao, statusNovo);
         setEnviandoGps(false);
-        buscarRastreamento();
       },
-      () => {
-        setStatusGps(
-          "GPS indisponível nesta tentativa. Tentando novamente automaticamente..."
-        );
+      (erro) => {
+        setStatusGps(`GPS indisponível nesta tentativa: ${erro.message}`);
         setEnviandoGps(false);
       },
       {
@@ -298,24 +336,38 @@ setDistanciaDestinoAtual(distanciaDestino);
       return;
     }
 
-    if (intervaloRef.current) {
-      clearInterval(intervaloRef.current);
+    if (!navigator.geolocation) {
+      setStatusGps("GPS não disponível neste navegador.");
+      return;
     }
 
-    enviarLocalizacao("Em rota");
-
-    intervaloRef.current = setInterval(() => {
-      enviarLocalizacao("Em rota");
-    }, 30000);
+    if (watchIdRef.current !== null) {
+      navigator.geolocation.clearWatch(watchIdRef.current);
+      watchIdRef.current = null;
+    }
 
     setRastreamentoAutomatico(true);
-    setStatusGps("Rastreamento automático iniciado. Atualiza a cada 30 segundos.");
+    setStatusGps("Rastreamento automático iniciado. Mantenha esta tela aberta.");
+
+    watchIdRef.current = navigator.geolocation.watchPosition(
+      async (posicao) => {
+        await salvarLocalizacao(posicao, "Em rota");
+      },
+      (erro) => {
+        setStatusGps(`Erro no rastreamento GPS: ${erro.message}`);
+      },
+      {
+        enableHighAccuracy: true,
+        timeout: 30000,
+        maximumAge: 0,
+      }
+    );
   }
 
   function pararRastreamentoAutomatico() {
-    if (intervaloRef.current) {
-      clearInterval(intervaloRef.current);
-      intervaloRef.current = null;
+    if (watchIdRef.current !== null && navigator.geolocation) {
+      navigator.geolocation.clearWatch(watchIdRef.current);
+      watchIdRef.current = null;
     }
 
     setRastreamentoAutomatico(false);
@@ -466,9 +518,16 @@ setDistanciaDestinoAtual(distanciaDestino);
                         Rastreamento automático ativo
                       </p>
                       <p className="text-sm text-green-100 mt-1">
-                        A localização continuará sendo enviada automaticamente até
-                        a entrega ser finalizada.
+                        A localização será enviada conforme o GPS detectar
+                        movimento. Para MVP web, mantenha esta tela aberta.
                       </p>
+
+                      <button
+                        onClick={pararRastreamentoAutomatico}
+                        className="mt-3 bg-slate-700 hover:bg-slate-600 rounded-xl p-3 font-semibold"
+                      >
+                        Parar rastreamento
+                      </button>
                     </div>
                   )}
 
@@ -489,20 +548,53 @@ setDistanciaDestinoAtual(distanciaDestino);
                   </button>
                 </div>
 
-                <>
-  {statusGps && (
-    <p className="text-sm text-slate-300 mt-3">{statusGps}</p>
-  )}
+                {statusGps && (
+                  <p className="text-sm text-slate-300 mt-3">{statusGps}</p>
+                )}
 
-  {distanciaDestinoAtual !== null && (
-    <p className="text-sm text-yellow-300 mt-2">
-      Distância até destino:{" "}
-      {distanciaDestinoAtual < 1000
-        ? `${Math.round(distanciaDestinoAtual)} m`
-        : `${(distanciaDestinoAtual / 1000).toFixed(2)} km`}
-    </p>
-  )}
-</>
+                {distanciaDestinoAtual !== null && (
+                  <p className="text-sm text-yellow-300 mt-2">
+                    Distância até destino:{" "}
+                    {distanciaDestinoAtual < 1000
+                      ? `${Math.round(distanciaDestinoAtual)} m`
+                      : `${(distanciaDestinoAtual / 1000).toFixed(2)} km`}
+                  </p>
+                )}
+
+                {ultimaLatitude !== null && ultimaLongitude !== null && (
+                  <div className="text-xs text-slate-400 mt-3 bg-slate-900 rounded-xl p-3">
+                    <p>
+                      Última latitude:{" "}
+                      <span className="text-slate-200">
+                        {ultimaLatitude.toFixed(6)}
+                      </span>
+                    </p>
+                    <p>
+                      Última longitude:{" "}
+                      <span className="text-slate-200">
+                        {ultimaLongitude.toFixed(6)}
+                      </span>
+                    </p>
+
+                    {ultimaPrecisao !== null && (
+                      <p>
+                        Precisão do GPS:{" "}
+                        <span className="text-slate-200">
+                          {Math.round(ultimaPrecisao)} m
+                        </span>
+                      </p>
+                    )}
+
+                    {ultimaVelocidade !== null && (
+                      <p>
+                        Velocidade aproximada:{" "}
+                        <span className="text-slate-200">
+                          {(ultimaVelocidade * 3.6).toFixed(1)} km/h
+                        </span>
+                      </p>
+                    )}
+                  </div>
+                )}
               </div>
             )}
           </div>
