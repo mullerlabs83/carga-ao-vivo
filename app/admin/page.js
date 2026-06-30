@@ -17,8 +17,74 @@ export default function Admin() {
   const [trajeto, setTrajeto] = useState([]);
   const [entrega, setEntrega] = useState(null);
 
+  const agora = Date.now();
+
   const cargasAtivas = listaCargas.filter((carga) => !carga.entrega);
   const historicoEntregas = listaCargas.filter((carga) => carga.entrega);
+
+  const motoristasOnline = cargasAtivas.filter((carga) => {
+    const ultimaAtualizacao =
+      carga.localizacao?.atualizadoEmMs ||
+      carga.localizacao?.timestamp ||
+      carga.localizacao?.ultimaAtualizacao;
+
+    if (!ultimaAtualizacao) return false;
+
+    return agora - Number(ultimaAtualizacao) <= 2 * 60 * 1000;
+  }).length;
+
+  function dataEntregaMs(carga) {
+    if (carga.entrega?.entregueEmMs) return Number(carga.entrega.entregueEmMs);
+
+    if (carga.entrega?.entregueEm) {
+      const convertido = new Date(carga.entrega.entregueEm).getTime();
+      return Number.isNaN(convertido) ? 0 : convertido;
+    }
+
+    return 0;
+  }
+
+  function mesmoDia(dataMs, referenciaMs) {
+    const data = new Date(dataMs);
+    const referencia = new Date(referenciaMs);
+
+    return (
+      data.getDate() === referencia.getDate() &&
+      data.getMonth() === referencia.getMonth() &&
+      data.getFullYear() === referencia.getFullYear()
+    );
+  }
+
+  const inicioOntem = new Date();
+  inicioOntem.setDate(inicioOntem.getDate() - 1);
+  inicioOntem.setHours(0, 0, 0, 0);
+
+  const entregasHoje = historicoEntregas.filter((carga) =>
+    mesmoDia(dataEntregaMs(carga), agora)
+  );
+
+  const entregasOntem = historicoEntregas.filter((carga) =>
+    mesmoDia(dataEntregaMs(carga), inicioOntem.getTime())
+  );
+
+  const entregasUltimos7Dias = historicoEntregas.filter((carga) => {
+    const dataMs = dataEntregaMs(carga);
+    const seteDiasMs = 7 * 24 * 60 * 60 * 1000;
+
+    return (
+      dataMs &&
+      agora - dataMs <= seteDiasMs &&
+      !mesmoDia(dataMs, agora) &&
+      !mesmoDia(dataMs, inicioOntem.getTime())
+    );
+  });
+
+  const entregasMaisAntigas = historicoEntregas.filter((carga) => {
+    const dataMs = dataEntregaMs(carga);
+    const seteDiasMs = 7 * 24 * 60 * 60 * 1000;
+
+    return !dataMs || agora - dataMs > seteDiasMs;
+  });
 
   useEffect(() => {
     const cargasRef = ref(db, "cargas");
@@ -36,13 +102,10 @@ export default function Admin() {
             entrega: dadosCarga?.entrega || null,
           }))
           .filter((carga) => {
-            return (
-              carga.cliente ||
-              carga.motorista ||
-              carga.produto ||
-              carga.localizacao ||
-              carga.entrega
-            );
+            const temDadosReais =
+              carga.cliente || carga.motorista || carga.produto;
+
+            return temDadosReais || carga.entrega;
           });
 
         setListaCargas(lista);
@@ -131,18 +194,66 @@ export default function Admin() {
           </span>
         </div>
 
-        <p><strong>Cliente:</strong> {carga.cliente || "-"}</p>
-        <p><strong>Motorista:</strong> {carga.motorista || "-"}</p>
-        <p><strong>Produto:</strong> {carga.produto || "-"}</p>
-        <p><strong>Status:</strong> {carga.status || "-"}</p>
+        <p>
+          <strong>Cliente:</strong> {carga.cliente || "-"}
+        </p>
+        <p>
+          <strong>Motorista:</strong> {carga.motorista || "-"}
+        </p>
+        <p>
+          <strong>Produto:</strong> {carga.produto || "-"}
+        </p>
+        <p>
+          <strong>Status:</strong> {carga.status || "-"}
+        </p>
+
+        {carga.localizacao && !historico && (
+          <p className="mt-2 text-sm">
+            {motoristaEstaOnline(carga) ? "🟢 GPS online" : "🔴 GPS offline"}
+          </p>
+        )}
 
         {carga.entrega && (
           <div className="mt-3 bg-green-950 rounded-xl p-3 text-sm">
-            <p><strong>✅ Recebido por:</strong> {carga.entrega.recebedor || "-"}</p>
-            <p><strong>Horário:</strong> {carga.entrega.entregueEm || "-"}</p>
+            <p>
+              <strong>✅ Recebido por:</strong>{" "}
+              {carga.entrega.recebedor || "-"}
+            </p>
+            <p>
+              <strong>Horário:</strong> {carga.entrega.entregueEm || "-"}
+            </p>
           </div>
         )}
       </button>
+    );
+  }
+
+  function motoristaEstaOnline(carga) {
+    const ultimaAtualizacao =
+      carga.localizacao?.atualizadoEmMs ||
+      carga.localizacao?.timestamp ||
+      carga.localizacao?.ultimaAtualizacao;
+
+    if (!ultimaAtualizacao) return false;
+
+    return Date.now() - Number(ultimaAtualizacao) <= 2 * 60 * 1000;
+  }
+
+  function SecaoHistorico({ titulo, entregas }) {
+    if (entregas.length === 0) return null;
+
+    return (
+      <div className="mb-6">
+        <h3 className="text-xl font-bold mb-3">
+          {titulo} ({entregas.length})
+        </h3>
+
+        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+          {entregas.map((carga) => (
+            <CardCarga key={carga.codigo} carga={carga} historico />
+          ))}
+        </div>
+      </div>
     );
   }
 
@@ -166,7 +277,7 @@ export default function Admin() {
         </button>
       </div>
 
-      <div className="grid gap-4 md:grid-cols-3 mb-6">
+      <div className="grid gap-4 md:grid-cols-4 mb-6">
         <div className="bg-slate-900 rounded-2xl p-4">
           <p className="text-slate-400">Total de cargas</p>
           <p className="text-3xl font-bold">{listaCargas.length}</p>
@@ -183,6 +294,13 @@ export default function Admin() {
           <p className="text-slate-400">Entregas concluídas</p>
           <p className="text-3xl font-bold text-green-400">
             {historicoEntregas.length}
+          </p>
+        </div>
+
+        <div className="bg-slate-900 rounded-2xl p-4">
+          <p className="text-slate-400">Motoristas online</p>
+          <p className="text-3xl font-bold text-blue-400">
+            {motoristasOnline}
           </p>
         </div>
       </div>
@@ -207,11 +325,18 @@ export default function Admin() {
         {historicoEntregas.length === 0 ? (
           <p className="text-slate-400">Nenhuma entrega concluída ainda.</p>
         ) : (
-          <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-            {historicoEntregas.map((carga) => (
-              <CardCarga key={carga.codigo} carga={carga} historico />
-            ))}
-          </div>
+          <>
+            <SecaoHistorico titulo="Hoje" entregas={entregasHoje} />
+            <SecaoHistorico titulo="Ontem" entregas={entregasOntem} />
+            <SecaoHistorico
+              titulo="Últimos 7 dias"
+              entregas={entregasUltimos7Dias}
+            />
+            <SecaoHistorico
+              titulo="Mais antigas"
+              entregas={entregasMaisAntigas}
+            />
+          </>
         )}
       </section>
 
@@ -229,8 +354,12 @@ export default function Admin() {
                 <h3 className="text-xl font-bold mb-2">
                   Entrega concluída ✅
                 </h3>
-                <p><strong>Recebido por:</strong> {entrega.recebedor || "-"}</p>
-                <p><strong>Horário:</strong> {entrega.entregueEm || "-"}</p>
+                <p>
+                  <strong>Recebido por:</strong> {entrega.recebedor || "-"}
+                </p>
+                <p>
+                  <strong>Horário:</strong> {entrega.entregueEm || "-"}
+                </p>
               </div>
             )}
 
@@ -241,11 +370,28 @@ export default function Admin() {
             ) : (
               <>
                 <div className="mb-4 bg-slate-800 rounded-xl p-4 grid gap-2 md:grid-cols-2">
-                  <p><strong>Status:</strong> {localizacao.status || "-"}</p>
-                  <p><strong>Motorista:</strong> {localizacao.motorista || "-"}</p>
-                  <p><strong>Veículo:</strong> {localizacao.veiculo || "-"}</p>
-                  <p><strong>Carga:</strong> {localizacao.carga || "-"}</p>
-                  <p><strong>Pontos registrados:</strong> {trajeto.length}</p>
+                  <p>
+                    <strong>Status:</strong> {localizacao.status || "-"}
+                  </p>
+                  <p>
+                    <strong>Motorista:</strong>{" "}
+                    {localizacao.motorista || "-"}
+                  </p>
+                  <p>
+                    <strong>Veículo:</strong> {localizacao.veiculo || "-"}
+                  </p>
+                  <p>
+                    <strong>Carga:</strong> {localizacao.carga || "-"}
+                  </p>
+                  <p>
+                    <strong>Pontos registrados:</strong> {trajeto.length}
+                  </p>
+                  <p>
+                    <strong>GPS:</strong>{" "}
+                    {motoristaEstaOnline({ localizacao })
+                      ? "🟢 Online"
+                      : "🔴 Offline"}
+                  </p>
                 </div>
 
                 <MapaCarga
