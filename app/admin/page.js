@@ -10,6 +10,29 @@ const MapaCarga = dynamic(() => import("../components/MapaCarga"), {
   loading: () => <p>Carregando mapa...</p>,
 });
 
+function normalizarEndereco(endereco) {
+  return `${endereco}, Brasil`;
+}
+
+async function buscarCoordenadas(endereco) {
+  const enderecoFinal = normalizarEndereco(endereco);
+
+  const url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(
+    enderecoFinal
+  )}&limit=1&countrycodes=br&addressdetails=1`;
+
+  const resposta = await fetch(url);
+  const dados = await resposta.json();
+
+  if (!dados || dados.length === 0) return null;
+
+  return {
+    latitude: Number(dados[0].lat),
+    longitude: Number(dados[0].lon),
+    enderecoEncontrado: dados[0].display_name,
+  };
+}
+
 export default function Admin() {
   const [listaCargas, setListaCargas] = useState([]);
   const [cargaSelecionada, setCargaSelecionada] = useState("");
@@ -18,13 +41,19 @@ export default function Admin() {
   const [entrega, setEntrega] = useState(null);
   const [geofence, setGeofence] = useState(null);
   const [mostrarFormulario, setMostrarFormulario] = useState(false);
+  const [salvandoCarga, setSalvandoCarga] = useState(false);
+
+  const [designacao, setDesignacao] = useState({
+    motorista: "",
+    telefoneMotorista: "",
+    placa: "",
+  });
 
   const [novaCarga, setNovaCarga] = useState({
     codigo: "",
     numeroCarga: "",
     cliente: "",
-    motorista: "",
-    placa: "",
+    telefoneCliente: "",
     origem: "",
     destino: "",
     localColeta: "",
@@ -57,6 +86,10 @@ export default function Admin() {
   const cargasAtivas = listaCargas.filter((carga) => !carga.entrega);
   const historicoEntregas = listaCargas.filter((carga) => carga.entrega);
 
+  const semMotorista = cargasAtivas.filter(
+    (carga) => carga.status === "Cadastrada" || !carga.motorista
+  ).length;
+
   const motoristasOnline = cargasAtivas.filter((carga) =>
     motoristaEstaOnline(carga)
   ).length;
@@ -81,19 +114,15 @@ export default function Admin() {
         Math.sin(dLon / 2) *
         Math.sin(dLon / 2);
 
-    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-
-    return R * c;
+    return R * (2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)));
   }
 
   function dataEntregaMs(carga) {
     if (carga.entrega?.entregueEmMs) return Number(carga.entrega.entregueEmMs);
-
     if (carga.entrega?.entregueEm) {
       const convertido = new Date(carga.entrega.entregueEm).getTime();
       return Number.isNaN(convertido) ? 0 : convertido;
     }
-
     return 0;
   }
 
@@ -135,7 +164,6 @@ export default function Admin() {
   const entregasMaisAntigas = historicoEntregas.filter((carga) => {
     const dataMs = dataEntregaMs(carga);
     const seteDiasMs = 7 * 24 * 60 * 60 * 1000;
-
     return !dataMs || agora - dataMs > seteDiasMs;
   });
 
@@ -143,41 +171,43 @@ export default function Admin() {
     const cargasRef = ref(db, "cargas");
 
     const pararCargas = onValue(cargasRef, (snapshot) => {
-      if (snapshot.exists()) {
-        const dados = snapshot.val();
-
-        const lista = Object.entries(dados)
-          .map(([codigo, dadosCarga]) => ({
-            codigo,
-            ...dadosCarga?.dados,
-            localizacao: dadosCarga?.localizacao || null,
-            trajeto: dadosCarga?.trajeto || null,
-            entrega: dadosCarga?.entrega || null,
-            geofence: dadosCarga?.geofence || null,
-            destinoCoordenadas: dadosCarga?.destinoCoordenadas || null,
-          }))
-          .filter((carga) => {
-            return (
-              carga.origem ||
-              carga.destino ||
-              carga.localColeta ||
-              carga.cliente ||
-              carga.motorista ||
-              carga.produto ||
-              carga.entrega
-            );
-          })
-          .sort((a, b) => Number(b.codigo) - Number(a.codigo));
-
-        setListaCargas(lista);
-
-        if (!cargaSelecionada && lista.length > 0) {
-          const primeiraAtiva = lista.find((carga) => !carga.entrega);
-          setCargaSelecionada(primeiraAtiva?.codigo || lista[0].codigo);
-        }
-      } else {
+      if (!snapshot.exists()) {
         setListaCargas([]);
         setCargaSelecionada("");
+        return;
+      }
+
+      const dados = snapshot.val();
+
+      const lista = Object.entries(dados)
+        .map(([codigo, dadosCarga]) => ({
+          codigo,
+          ...dadosCarga?.dados,
+          localizacao: dadosCarga?.localizacao || null,
+          trajeto: dadosCarga?.trajeto || null,
+          entrega: dadosCarga?.entrega || null,
+          geofence: dadosCarga?.geofence || null,
+          destinoCoordenadas: dadosCarga?.destinoCoordenadas || null,
+          origemCoordenadas: dadosCarga?.origemCoordenadas || null,
+        }))
+        .filter((carga) => {
+          return (
+            carga.origem ||
+            carga.destino ||
+            carga.localColeta ||
+            carga.cliente ||
+            carga.motorista ||
+            carga.produto ||
+            carga.entrega
+          );
+        })
+        .sort((a, b) => Number(b.criadoEmMs || b.codigo) - Number(a.criadoEmMs || a.codigo));
+
+      setListaCargas(lista);
+
+      if (!cargaSelecionada && lista.length > 0) {
+        const primeiraAtiva = lista.find((carga) => !carga.entrega);
+        setCargaSelecionada(primeiraAtiva?.codigo || lista[0].codigo);
       }
     });
 
@@ -208,18 +238,28 @@ export default function Admin() {
       setGeofence(snapshot.exists() ? snapshot.val() : null);
     });
 
+    const carga = listaCargas.find((item) => item.codigo === cargaSelecionada);
+
+    if (carga) {
+      setDesignacao({
+        motorista: carga.motorista || "",
+        telefoneMotorista: carga.telefoneMotorista || "",
+        placa: carga.placa || "",
+      });
+    }
+
     return () => {
       pararLocalizacao();
       pararTrajeto();
       pararEntrega();
       pararGeofence();
     };
-  }, [cargaSelecionada]);
+  }, [cargaSelecionada, listaCargas]);
 
   function motoristaEstaOnline(carga) {
     const ultimaAtualizacao =
-      carga.localizacao?.atualizadoEmMs ||
       carga.localizacao?.timestamp ||
+      carga.localizacao?.atualizadoEmMs ||
       carga.localizacao?.ultimaAtualizacao;
 
     if (!ultimaAtualizacao) return false;
@@ -228,52 +268,152 @@ export default function Admin() {
   }
 
   function gerarCodigoCarga() {
-    return String(Date.now()).slice(-6);
+    return String(Date.now());
+  }
+
+  function classeStatus(status) {
+    if (status === "Cadastrada") return "text-slate-300";
+    if (status === "Motorista designado") return "text-blue-300";
+    if (status === "Rastreamento iniciado") return "text-yellow-300";
+    if (status === "Em rota") return "text-orange-300";
+    if (status === "Chegou ao destino") return "text-green-300";
+    if (status?.includes("Entregue")) return "text-green-400";
+    return "text-slate-300";
   }
 
   async function cadastrarNovaCarga(e) {
     e.preventDefault();
+    if (salvandoCarga) return;
 
     const codigoFinal = novaCarga.codigo.trim() || gerarCodigoCarga();
 
     if (!novaCarga.origem.trim() || !novaCarga.destino.trim()) {
-      alert("Preencha pelo menos origem e destino.");
+      alert("Preencha origem e destino com rua, número, cidade e estado.");
       return;
     }
 
-    await set(ref(db, `cargas/${codigoFinal}/dados`), {
-      numeroCarga: novaCarga.numeroCarga.trim(),
-      cliente: novaCarga.cliente.trim(),
-      motorista: novaCarga.motorista.trim(),
-      placa: novaCarga.placa.trim(),
-      origem: novaCarga.origem.trim(),
-      destino: novaCarga.destino.trim(),
-      localColeta: novaCarga.localColeta.trim(),
-      produto: novaCarga.produto.trim(),
-      transportadoraResponsavel:
-        novaCarga.transportadoraResponsavel.trim(),
-      status: "Disponível",
-      criadoEm: new Date().toLocaleString("pt-BR"),
-      criadoEmMs: Date.now(),
-    });
+    try {
+      setSalvandoCarga(true);
 
-    setCargaSelecionada(codigoFinal);
-    setMostrarFormulario(false);
+      const origemCoordenadas = await buscarCoordenadas(novaCarga.origem.trim());
+      const destinoCoordenadas = await buscarCoordenadas(novaCarga.destino.trim());
 
-    setNovaCarga({
-      codigo: "",
-      numeroCarga: "",
-      cliente: "",
-      motorista: "",
-      placa: "",
-      origem: "",
-      destino: "",
-      localColeta: "",
-      produto: "",
-      transportadoraResponsavel: "",
-    });
+      if (!origemCoordenadas) {
+        alert("Não consegui localizar o endereço de origem.");
+        return;
+      }
 
-    alert(`Carga ${codigoFinal} cadastrada com sucesso.`);
+      if (!destinoCoordenadas) {
+        alert("Não consegui localizar o endereço de destino.");
+        return;
+      }
+
+      await set(ref(db, `cargas/${codigoFinal}/dados`), {
+        numeroCarga: novaCarga.numeroCarga.trim(),
+        cliente: novaCarga.cliente.trim(),
+        telefoneCliente: novaCarga.telefoneCliente.trim(),
+        origem: novaCarga.origem.trim(),
+        destino: novaCarga.destino.trim(),
+        localColeta: novaCarga.localColeta.trim() || novaCarga.origem.trim(),
+        produto: novaCarga.produto.trim(),
+        transportadoraResponsavel:
+          novaCarga.transportadoraResponsavel.trim(),
+        motorista: "",
+        telefoneMotorista: "",
+        placa: "",
+        status: "Cadastrada",
+        linkClienteLiberado: false,
+        rastreamentoIniciado: false,
+        criadoEm: new Date().toLocaleString("pt-BR"),
+        criadoEmMs: Date.now(),
+      });
+
+      await set(ref(db, `cargas/${codigoFinal}/origemCoordenadas`), {
+        latitude: origemCoordenadas.latitude,
+        longitude: origemCoordenadas.longitude,
+        enderecoEncontrado: origemCoordenadas.enderecoEncontrado,
+      });
+
+      await set(ref(db, `cargas/${codigoFinal}/destinoCoordenadas`), {
+        latitude: destinoCoordenadas.latitude,
+        longitude: destinoCoordenadas.longitude,
+        enderecoEncontrado: destinoCoordenadas.enderecoEncontrado,
+      });
+
+      await set(ref(db, `cargas/${codigoFinal}/geofence`), {
+        ativa: true,
+        raioMetros: 1000,
+        raioSaidaMetros: 1500,
+        entrouNoDestino: false,
+        saiuDoDestino: false,
+        entregaAutomatica: false,
+        criadoEm: new Date().toLocaleString("pt-BR"),
+        criadoEmMs: Date.now(),
+      });
+
+      setCargaSelecionada(codigoFinal);
+      setMostrarFormulario(false);
+
+      setNovaCarga({
+        codigo: "",
+        numeroCarga: "",
+        cliente: "",
+        telefoneCliente: "",
+        origem: "",
+        destino: "",
+        localColeta: "",
+        produto: "",
+        transportadoraResponsavel: "",
+      });
+
+      alert(`Carga ${codigoFinal} cadastrada. Agora designe o motorista.`);
+    } catch (erro) {
+      console.error(erro);
+      alert("Erro ao cadastrar carga. Verifique o endereço e tente novamente.");
+    } finally {
+      setSalvandoCarga(false);
+    }
+  }
+
+  async function designarMotorista() {
+    if (!cargaSelecionada) {
+      alert("Selecione uma carga.");
+      return;
+    }
+
+    if (!designacao.motorista.trim()) {
+      alert("Informe o nome do motorista.");
+      return;
+    }
+
+    const agoraTexto = new Date().toLocaleString("pt-BR");
+
+    await set(
+      ref(db, `cargas/${cargaSelecionada}/dados/motorista`),
+      designacao.motorista.trim()
+    );
+
+    await set(
+      ref(db, `cargas/${cargaSelecionada}/dados/telefoneMotorista`),
+      designacao.telefoneMotorista.trim()
+    );
+
+    await set(
+      ref(db, `cargas/${cargaSelecionada}/dados/placa`),
+      designacao.placa.trim()
+    );
+
+    await set(
+      ref(db, `cargas/${cargaSelecionada}/dados/status`),
+      "Motorista designado"
+    );
+
+    await set(
+      ref(db, `cargas/${cargaSelecionada}/dados/motoristaDesignadoEm`),
+      agoraTexto
+    );
+
+    alert("Motorista designado com sucesso.");
   }
 
   async function limparTestesAntigos() {
@@ -326,24 +466,37 @@ export default function Admin() {
         </div>
 
         <p>
-          <strong>Rota:</strong> {carga.origem || carga.cliente || "-"} →{" "}
-          {carga.destino || carga.produto || "-"}
+          <strong>Rota:</strong> {carga.origem || "-"} →{" "}
+          {carga.destino || "-"}
         </p>
 
         <p>
-          <strong>Coleta:</strong> {carga.localColeta || "-"}
+          <strong>Cliente:</strong> {carga.cliente || "-"}
         </p>
 
         <p>
-          <strong>Motorista:</strong> {carga.motorista || "-"}
+          <strong>Motorista:</strong> {carga.motorista || "Sem motorista"}
         </p>
 
         <p>
-          <strong>Status:</strong> {carga.status || "-"}
+          <strong>Status:</strong>{" "}
+          <span className={classeStatus(carga.status)}>
+            {carga.status || "Cadastrada"}
+          </span>
         </p>
 
-        <p className="mt-2 text-sm text-blue-300 break-all">
-          Link: /acompanhar/{carga.codigo}
+        {carga.linkClienteLiberado ? (
+          <p className="mt-2 text-sm text-green-300 break-all">
+            Cliente liberado: /acompanhar/{carga.codigo}
+          </p>
+        ) : (
+          <p className="mt-2 text-sm text-yellow-300">
+            Link do cliente aguardando saída da origem
+          </p>
+        )}
+
+        <p className="mt-1 text-sm text-blue-300 break-all">
+          Link motorista: /motorista — Código {carga.codigo}
         </p>
 
         {carga.localizacao && !historico && (
@@ -359,12 +512,6 @@ export default function Admin() {
         {carga.geofence?.entrouNoDestino && !carga.entrega && (
           <p className="mt-1 text-sm text-yellow-300">
             📍 Chegou ao destino
-          </p>
-        )}
-
-        {carga.geofence?.entregaAutomatica && (
-          <p className="mt-1 text-sm text-green-300">
-            ✅ Entrega automática
           </p>
         )}
 
@@ -411,7 +558,7 @@ export default function Admin() {
           </h1>
 
           <p className="text-slate-400 mt-1">
-            Monitoramento de cargas em tempo real
+            Cadastro, designação de motorista e rastreamento em tempo real
           </p>
         </div>
 
@@ -435,6 +582,11 @@ export default function Admin() {
       {mostrarFormulario && (
         <section className="mb-6 bg-slate-900 rounded-2xl p-4">
           <h2 className="text-2xl font-bold mb-4">Cadastrar nova carga</h2>
+
+          <p className="text-slate-400 mb-4">
+            A carga nasce como <strong>Cadastrada</strong>. Depois você designa
+            motorista e placa. As coordenadas ficam ocultas.
+          </p>
 
           <form onSubmit={cadastrarNovaCarga} className="grid gap-4 md:grid-cols-2">
             <input
@@ -465,6 +617,15 @@ export default function Admin() {
             />
 
             <input
+              value={novaCarga.telefoneCliente}
+              onChange={(e) =>
+                setNovaCarga({ ...novaCarga, telefoneCliente: e.target.value })
+              }
+              placeholder="Telefone / WhatsApp do cliente"
+              className="bg-slate-800 rounded-xl p-3 outline-none"
+            />
+
+            <input
               value={novaCarga.transportadoraResponsavel}
               onChange={(e) =>
                 setNovaCarga({
@@ -473,25 +634,7 @@ export default function Admin() {
                 })
               }
               placeholder="Transportadora responsável"
-              className="bg-slate-800 rounded-xl p-3 outline-none"
-            />
-
-            <input
-              value={novaCarga.motorista}
-              onChange={(e) =>
-                setNovaCarga({ ...novaCarga, motorista: e.target.value })
-              }
-              placeholder="Motorista"
-              className="bg-slate-800 rounded-xl p-3 outline-none"
-            />
-
-            <input
-              value={novaCarga.placa}
-              onChange={(e) =>
-                setNovaCarga({ ...novaCarga, placa: e.target.value })
-              }
-              placeholder="Placa"
-              className="bg-slate-800 rounded-xl p-3 outline-none"
+              className="bg-slate-800 rounded-xl p-3 outline-none md:col-span-2"
             />
 
             <input
@@ -499,8 +642,8 @@ export default function Admin() {
               onChange={(e) =>
                 setNovaCarga({ ...novaCarga, origem: e.target.value })
               }
-              placeholder="Origem *"
-              className="bg-slate-800 rounded-xl p-3 outline-none"
+              placeholder="Origem: Rua, número, cidade e estado *"
+              className="bg-slate-800 rounded-xl p-3 outline-none md:col-span-2"
             />
 
             <input
@@ -508,8 +651,8 @@ export default function Admin() {
               onChange={(e) =>
                 setNovaCarga({ ...novaCarga, destino: e.target.value })
               }
-              placeholder="Destino *"
-              className="bg-slate-800 rounded-xl p-3 outline-none"
+              placeholder="Destino: Rua, número, cidade e estado *"
+              className="bg-slate-800 rounded-xl p-3 outline-none md:col-span-2"
             />
 
             <input
@@ -517,7 +660,7 @@ export default function Admin() {
               onChange={(e) =>
                 setNovaCarga({ ...novaCarga, localColeta: e.target.value })
               }
-              placeholder="Local de coleta"
+              placeholder="Local de coleta (opcional, se vazio usa a origem)"
               className="bg-slate-800 rounded-xl p-3 outline-none"
             />
 
@@ -532,9 +675,12 @@ export default function Admin() {
 
             <button
               type="submit"
-              className="md:col-span-2 bg-blue-600 hover:bg-blue-700 rounded-xl p-4 font-bold"
+              disabled={salvandoCarga}
+              className="md:col-span-2 bg-blue-600 hover:bg-blue-700 rounded-xl p-4 font-bold disabled:bg-slate-700"
             >
-              Salvar carga
+              {salvandoCarga
+                ? "Buscando endereço e salvando..."
+                : "Salvar carga"}
             </button>
           </form>
         </section>
@@ -554,10 +700,8 @@ export default function Admin() {
         </div>
 
         <div className="bg-slate-900 rounded-2xl p-4">
-          <p className="text-slate-400">Entregues</p>
-          <p className="text-3xl font-bold text-green-400">
-            {historicoEntregas.length}
-          </p>
+          <p className="text-slate-400">Sem motorista</p>
+          <p className="text-3xl font-bold text-yellow-400">{semMotorista}</p>
         </div>
 
         <div className="bg-slate-900 rounded-2xl p-4">
@@ -575,9 +719,9 @@ export default function Admin() {
         </div>
 
         <div className="bg-slate-900 rounded-2xl p-4">
-          <p className="text-slate-400">No destino</p>
-          <p className="text-3xl font-bold text-yellow-400">
-            {chegaramDestino}
+          <p className="text-slate-400">Entregues</p>
+          <p className="text-3xl font-bold text-green-400">
+            {historicoEntregas.length}
           </p>
         </div>
       </div>
@@ -596,28 +740,66 @@ export default function Admin() {
         )}
       </section>
 
-      <section className="mb-6 bg-slate-900 rounded-2xl p-4">
-        <h2 className="text-2xl font-bold mb-4">Histórico de entregas</h2>
+      {cargaAtual && !cargaAtual.entrega && (
+        <section className="mb-6 bg-slate-900 rounded-2xl p-4">
+          <h2 className="text-2xl font-bold mb-4">
+            Designar motorista — carga {cargaSelecionada}
+          </h2>
 
-        {historicoEntregas.length === 0 ? (
-          <p className="text-slate-400">Nenhuma entrega concluída ainda.</p>
-        ) : (
-          <>
-            <SecaoHistorico titulo="Hoje" entregas={entregasHoje} />
-            <SecaoHistorico titulo="Ontem" entregas={entregasOntem} />
-            <SecaoHistorico
-              titulo="Últimos 7 dias"
-              entregas={entregasUltimos7Dias}
+          <div className="grid gap-4 md:grid-cols-3">
+            <input
+              value={designacao.motorista}
+              onChange={(e) =>
+                setDesignacao({ ...designacao, motorista: e.target.value })
+              }
+              placeholder="Nome do motorista"
+              className="bg-slate-800 rounded-xl p-3 outline-none"
             />
-            <SecaoHistorico
-              titulo="Mais antigas"
-              entregas={entregasMaisAntigas}
-            />
-          </>
-        )}
-      </section>
 
-      <section className="bg-slate-900 rounded-2xl p-4">
+            <input
+              value={designacao.telefoneMotorista}
+              onChange={(e) =>
+                setDesignacao({
+                  ...designacao,
+                  telefoneMotorista: e.target.value,
+                })
+              }
+              placeholder="Telefone do motorista"
+              className="bg-slate-800 rounded-xl p-3 outline-none"
+            />
+
+            <input
+              value={designacao.placa}
+              onChange={(e) =>
+                setDesignacao({ ...designacao, placa: e.target.value })
+              }
+              placeholder="Placa do veículo"
+              className="bg-slate-800 rounded-xl p-3 outline-none"
+            />
+
+            <button
+              onClick={designarMotorista}
+              className="md:col-span-3 bg-blue-600 hover:bg-blue-700 rounded-xl p-4 font-bold"
+            >
+              Salvar motorista designado
+            </button>
+          </div>
+
+          <div className="mt-4 bg-slate-800 rounded-xl p-4 text-sm">
+            <p>
+              <strong>Link para motorista:</strong> /motorista
+            </p>
+            <p>
+              <strong>Código da carga:</strong> {cargaSelecionada}
+            </p>
+            <p className="text-yellow-300 mt-2">
+              O destino completo só será liberado para o motorista após ativar o GPS.
+            </p>
+          </div>
+        </section>
+      )}
+
+      <section className="bg-slate-900 rounded-2xl p-4 mb-6">
         <h2 className="text-2xl font-bold mb-4">
           Rastreamento da carga: {cargaSelecionada || "nenhuma"}
         </h2>
@@ -626,6 +808,43 @@ export default function Admin() {
           <p className="text-slate-400">Selecione uma carga para acompanhar.</p>
         ) : (
           <>
+            {cargaAtual && (
+              <div className="mb-4 bg-slate-800 rounded-xl p-4 grid gap-2 md:grid-cols-2">
+                <p>
+                  <strong>Status:</strong>{" "}
+                  <span className={classeStatus(cargaAtual.status)}>
+                    {cargaAtual.status || "Cadastrada"}
+                  </span>
+                </p>
+
+                <p>
+                  <strong>Cliente:</strong> {cargaAtual.cliente || "-"}
+                </p>
+
+                <p>
+                  <strong>Motorista:</strong>{" "}
+                  {cargaAtual.motorista || "Sem motorista"}
+                </p>
+
+                <p>
+                  <strong>Placa:</strong> {cargaAtual.placa || "-"}
+                </p>
+
+                <p>
+                  <strong>Link cliente:</strong>{" "}
+                  {cargaAtual.linkClienteLiberado ? (
+                    <span className="text-green-300">
+                      /acompanhar/{cargaSelecionada}
+                    </span>
+                  ) : (
+                    <span className="text-yellow-300">
+                      Aguardando sair 2 km da origem
+                    </span>
+                  )}
+                </p>
+              </div>
+            )}
+
             {entrega && (
               <div className="mb-4 bg-green-900 rounded-2xl p-4">
                 <h3 className="text-xl font-bold mb-2">
@@ -650,7 +869,12 @@ export default function Admin() {
                 </p>
 
                 <p>
-                  <strong>Raio:</strong> {geofence.raioMetros || 500} m
+                  <strong>Raio entrada:</strong> {geofence.raioMetros || 1000} m
+                </p>
+
+                <p>
+                  <strong>Raio saída:</strong>{" "}
+                  {geofence.raioSaidaMetros || 1500} m
                 </p>
 
                 <p>
@@ -662,33 +886,16 @@ export default function Admin() {
                   <strong>Automática:</strong>{" "}
                   {geofence.entregaAutomatica ? "✅ Sim" : "Não"}
                 </p>
-
-                {geofence.horarioEntradaDestino && (
-                  <p>
-                    <strong>Entrada:</strong>{" "}
-                    {geofence.horarioEntradaDestino}
-                  </p>
-                )}
-
-                {geofence.horarioSaidaDestino && (
-                  <p>
-                    <strong>Saída:</strong> {geofence.horarioSaidaDestino}
-                  </p>
-                )}
               </div>
             )}
 
             {!localizacao ? (
               <p className="text-slate-400">
-                Aguardando rastreamento dessa carga...
+                Aguardando o motorista iniciar o GPS...
               </p>
             ) : (
               <>
                 <div className="mb-4 bg-slate-800 rounded-xl p-4 grid gap-2 md:grid-cols-2">
-                  <p>
-                    <strong>Status:</strong> {localizacao.status || "-"}
-                  </p>
-
                   <p>
                     <strong>Pontos registrados:</strong> {trajeto.length}
                   </p>
@@ -696,6 +903,13 @@ export default function Admin() {
                   <p>
                     <strong>Última atualização:</strong>{" "}
                     {localizacao.atualizadoEm || "-"}
+                  </p>
+
+                  <p>
+                    <strong>Precisão:</strong>{" "}
+                    {localizacao.precisao
+                      ? `${Math.round(localizacao.precisao)} m`
+                      : "-"}
                   </p>
 
                   <p>
@@ -720,6 +934,27 @@ export default function Admin() {
                 />
               </>
             )}
+          </>
+        )}
+      </section>
+
+      <section className="mb-6 bg-slate-900 rounded-2xl p-4">
+        <h2 className="text-2xl font-bold mb-4">Histórico de entregas</h2>
+
+        {historicoEntregas.length === 0 ? (
+          <p className="text-slate-400">Nenhuma entrega concluída ainda.</p>
+        ) : (
+          <>
+            <SecaoHistorico titulo="Hoje" entregas={entregasHoje} />
+            <SecaoHistorico titulo="Ontem" entregas={entregasOntem} />
+            <SecaoHistorico
+              titulo="Últimos 7 dias"
+              entregas={entregasUltimos7Dias}
+            />
+            <SecaoHistorico
+              titulo="Mais antigas"
+              entregas={entregasMaisAntigas}
+            />
           </>
         )}
       </section>

@@ -1,62 +1,8 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { ref, get, set, push, onValue } from "firebase/database";
+import { ref, get, set, push } from "firebase/database";
 import { db } from "../../services/firebase";
-
-const distanciasSimuladas = {
-  curitiba: {
-    curitiba: 0,
-    "são josé dos pinhais": 15,
-    pinhais: 12,
-    colombo: 18,
-    araucária: 28,
-    joinville: 130,
-    "são paulo": 408,
-  },
-  "são paulo": {
-    "são paulo": 0,
-    guarulhos: 20,
-    osasco: 22,
-    campinas: 95,
-    curitiba: 408,
-  },
-};
-
-function normalizar(texto = "") {
-  return texto
-    .toLowerCase()
-    .trim()
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "");
-}
-
-function calcularDistancia(localColeta, localMotorista) {
-  const coleta = normalizar(localColeta);
-  const motorista = normalizar(localMotorista);
-
-  const tabela = {};
-
-  Object.keys(distanciasSimuladas).forEach((cidadeOrigem) => {
-    const origemNormalizada = normalizar(cidadeOrigem);
-    tabela[origemNormalizada] = {};
-
-    Object.keys(distanciasSimuladas[cidadeOrigem]).forEach((cidadeDestino) => {
-      tabela[origemNormalizada][normalizar(cidadeDestino)] =
-        distanciasSimuladas[cidadeOrigem][cidadeDestino];
-    });
-  });
-
-  if (tabela[coleta] && tabela[coleta][motorista] !== undefined) {
-    return tabela[coleta][motorista];
-  }
-
-  if (coleta.includes(motorista) || motorista.includes(coleta)) {
-    return 0;
-  }
-
-  return 9999;
-}
 
 function calcularDistanciaGps(lat1, lon1, lat2, lon2) {
   const R = 6371000;
@@ -76,16 +22,15 @@ function calcularDistanciaGps(lat1, lon1, lat2, lon2) {
 }
 
 export default function MotoristaPage() {
-  const [nome, setNome] = useState("");
-  const [localAtual, setLocalAtual] = useState("");
-  const [cargas, setCargas] = useState([]);
-
   const [codigoRastreamento, setCodigoRastreamento] = useState("");
   const [rastreamento, setRastreamento] = useState(null);
   const [statusGps, setStatusGps] = useState("");
   const [enviandoGps, setEnviandoGps] = useState(false);
   const [rastreamentoAutomatico, setRastreamentoAutomatico] = useState(false);
+
   const [distanciaDestinoAtual, setDistanciaDestinoAtual] = useState(null);
+  const [distanciaOrigemAtual, setDistanciaOrigemAtual] = useState(null);
+
   const [ultimaLatitude, setUltimaLatitude] = useState(null);
   const [ultimaLongitude, setUltimaLongitude] = useState(null);
   const [ultimaPrecisao, setUltimaPrecisao] = useState(null);
@@ -94,34 +39,7 @@ export default function MotoristaPage() {
   const watchIdRef = useRef(null);
 
   useEffect(() => {
-    const cargasRef = ref(db, "cargas");
-
-    const parar = onValue(cargasRef, (snapshot) => {
-      if (!snapshot.exists()) {
-        setCargas([]);
-        return;
-      }
-
-      const dados = snapshot.val();
-
-      const lista = Object.entries(dados)
-        .map(([id, carga]) => ({
-          id,
-          ...carga?.dados,
-          geofence: carga?.geofence || null,
-          destinoCoordenadas: carga?.destinoCoordenadas || null,
-          entrega: carga?.entrega || null,
-          localizacao: carga?.localizacao || null,
-        }))
-        .filter((carga) => carga.origem || carga.destino || carga.localColeta)
-        .sort((a, b) => Number(b.id) - Number(a.id));
-
-      setCargas(lista);
-    });
-
     return () => {
-      parar();
-
       if (watchIdRef.current !== null && navigator.geolocation) {
         navigator.geolocation.clearWatch(watchIdRef.current);
         watchIdRef.current = null;
@@ -130,12 +48,13 @@ export default function MotoristaPage() {
   }, []);
 
   async function buscarRastreamento() {
-    if (!codigoRastreamento) {
+    if (!codigoRastreamento.trim()) {
       alert("Digite o código do rastreamento.");
       return;
     }
 
-    const snapshot = await get(ref(db, `cargas/${codigoRastreamento}`));
+    const codigo = codigoRastreamento.trim();
+    const snapshot = await get(ref(db, `cargas/${codigo}`));
 
     if (!snapshot.exists()) {
       alert("Rastreamento não encontrado.");
@@ -146,31 +65,89 @@ export default function MotoristaPage() {
     const dados = snapshot.val();
 
     setRastreamento({
+      codigo,
       ...dados?.dados,
-      geofence: dados?.geofence || null,
+      origemCoordenadas: dados?.origemCoordenadas || null,
       destinoCoordenadas: dados?.destinoCoordenadas || null,
+      geofence: dados?.geofence || null,
       entrega: dados?.entrega || null,
       localizacao: dados?.localizacao || null,
     });
   }
 
-  async function verificarGeofence(latitude, longitude, atualizadoEm) {
-    if (!codigoRastreamento) return;
+  function destinoLiberado() {
+    return (
+      rastreamento?.gpsValidado === true ||
+      rastreamento?.rastreamentoIniciado === true ||
+      rastreamento?.status === "Rastreamento iniciado" ||
+      rastreamento?.status === "Em rota" ||
+      rastreamento?.status === "Chegou ao destino" ||
+      rastreamento?.entrega
+    );
+  }
 
-    const cargaSnapshot = await get(ref(db, `cargas/${codigoRastreamento}`));
+  function pararWatchGps() {
+    if (watchIdRef.current !== null && navigator.geolocation) {
+      navigator.geolocation.clearWatch(watchIdRef.current);
+      watchIdRef.current = null;
+    }
+  }
 
+  async function verificarSaidaOrigem(latitude, longitude, atualizadoEm) {
+    const codigo = codigoRastreamento.trim();
+    if (!codigo) return;
+
+    const cargaSnapshot = await get(ref(db, `cargas/${codigo}`));
     if (!cargaSnapshot.exists()) return;
 
     const carga = cargaSnapshot.val();
 
-    if (!carga?.destinoCoordenadas || !carga?.geofence?.ativa) {
-      return;
-    }
+    if (!carga?.origemCoordenadas) return;
+    if (carga?.entrega) return;
 
-    if (carga?.entrega) {
-      pararRastreamentoAutomatico();
-      return;
+    const distanciaOrigem = calcularDistanciaGps(
+      latitude,
+      longitude,
+      carga.origemCoordenadas.latitude,
+      carga.origemCoordenadas.longitude
+    );
+
+    setDistanciaOrigemAtual(distanciaOrigem);
+
+    const distanciaKm = distanciaOrigem / 1000;
+    const linkJaLiberado = carga?.dados?.linkClienteLiberado;
+
+    if (distanciaKm >= 2 && !linkJaLiberado) {
+      await set(ref(db, `cargas/${codigo}/dados/linkClienteLiberado`), true);
+      await set(
+        ref(db, `cargas/${codigo}/dados/linkClienteLiberadoEm`),
+        atualizadoEm
+      );
+      await set(
+        ref(db, `cargas/${codigo}/dados/distanciaOrigemKmQuandoLiberou`),
+        Number(distanciaKm.toFixed(2))
+      );
+      await set(ref(db, `cargas/${codigo}/dados/status`), "Em rota");
+
+      setStatusGps(
+        `🚚 Carga em rota. Link do cliente liberado após ${distanciaKm.toFixed(
+          2
+        )} km da origem.`
+      );
     }
+  }
+
+  async function verificarGeofenceDestino(latitude, longitude, atualizadoEm) {
+    const codigo = codigoRastreamento.trim();
+    if (!codigo) return;
+
+    const cargaSnapshot = await get(ref(db, `cargas/${codigo}`));
+    if (!cargaSnapshot.exists()) return;
+
+    const carga = cargaSnapshot.val();
+
+    if (!carga?.destinoCoordenadas || !carga?.geofence?.ativa) return;
+    if (carga?.entrega) return;
 
     const distanciaDestino = calcularDistanciaGps(
       latitude,
@@ -182,13 +159,14 @@ export default function MotoristaPage() {
     setDistanciaDestinoAtual(distanciaDestino);
 
     const raioEntradaMetros = carga.geofence.raioMetros || 1000;
-    const raioSaidaMetros = carga.geofence.raioSaidaMetros || raioEntradaMetros + 500;
+    const raioSaidaMetros =
+      carga.geofence.raioSaidaMetros || raioEntradaMetros + 500;
 
     const dentroGeofence = distanciaDestino <= raioEntradaMetros;
     const saiuDaGeofence = distanciaDestino >= raioSaidaMetros;
 
     if (dentroGeofence && !carga.geofence.entrouNoDestino) {
-      await set(ref(db, `cargas/${codigoRastreamento}/geofence`), {
+      await set(ref(db, `cargas/${codigo}/geofence`), {
         ...carga.geofence,
         entrouNoDestino: true,
         saiuDoDestino: false,
@@ -197,10 +175,7 @@ export default function MotoristaPage() {
         distanciaEntradaMetros: Math.round(distanciaDestino),
       });
 
-      await set(
-        ref(db, `cargas/${codigoRastreamento}/dados/status`),
-        "Chegou ao destino"
-      );
+      await set(ref(db, `cargas/${codigo}/dados/status`), "Chegou ao destino");
 
       setStatusGps(
         `📍 Chegada detectada no destino. Distância: ${Math.round(
@@ -218,7 +193,7 @@ export default function MotoristaPage() {
       !carga.geofence.saiuDoDestino &&
       !carga.geofence.entregaAutomatica
     ) {
-      await set(ref(db, `cargas/${codigoRastreamento}/geofence`), {
+      await set(ref(db, `cargas/${codigo}/geofence`), {
         ...carga.geofence,
         saiuDoDestino: true,
         entregaAutomatica: true,
@@ -226,7 +201,7 @@ export default function MotoristaPage() {
         distanciaSaidaMetros: Math.round(distanciaDestino),
       });
 
-      await set(ref(db, `cargas/${codigoRastreamento}/entrega`), {
+      await set(ref(db, `cargas/${codigo}/entrega`), {
         recebedor: "Entrega finalizada automaticamente por geofence",
         entregueEm: atualizadoEm,
         entregueEmMs: Date.now(),
@@ -234,19 +209,20 @@ export default function MotoristaPage() {
       });
 
       await set(
-        ref(db, `cargas/${codigoRastreamento}/dados/status`),
+        ref(db, `cargas/${codigo}/dados/status`),
         "Entregue automaticamente"
       );
 
-      pararRastreamentoAutomatico();
-
+      pararWatchGps();
+      setRastreamentoAutomatico(false);
       setStatusGps("✅ Entrega finalizada automaticamente por geofence.");
       buscarRastreamento();
     }
   }
 
-  async function salvarLocalizacao(posicao, statusNovo = "Em rota") {
-    if (!codigoRastreamento) return;
+  async function salvarLocalizacao(posicao, statusNovo = "Rastreamento iniciado") {
+    const codigo = codigoRastreamento.trim();
+    if (!codigo) return;
 
     const latitude = posicao.coords.latitude;
     const longitude = posicao.coords.longitude;
@@ -260,47 +236,70 @@ export default function MotoristaPage() {
     setUltimaPrecisao(precisao);
     setUltimaVelocidade(velocidade);
 
-    await set(ref(db, `cargas/${codigoRastreamento}/localizacao`), {
-      latitude,
-      longitude,
-      precisao,
-      velocidade,
-      atualizadoEm,
-      timestamp,
-    });
+    if (precisao && precisao > 200) {
+      pararWatchGps();
+      setRastreamentoAutomatico(false);
+      setEnviandoGps(false);
 
-    await push(ref(db, `cargas/${codigoRastreamento}/trajeto`), {
-      latitude,
-      longitude,
-      precisao,
-      velocidade,
-      atualizadoEm,
-      timestamp,
-    });
-
-    await verificarGeofence(latitude, longitude, atualizadoEm);
-
-    const cargaSnapshot = await get(ref(db, `cargas/${codigoRastreamento}`));
-    const cargaAtual = cargaSnapshot.exists() ? cargaSnapshot.val() : null;
-
-    if (
-      cargaAtual &&
-      !cargaAtual?.entrega &&
-      cargaAtual?.dados?.status !== "Chegou ao destino"
-    ) {
-      await set(
-        ref(db, `cargas/${codigoRastreamento}/dados/status`),
-        statusNovo
+      setStatusGps(
+        `⚠️ GPS com baixa precisão (${Math.round(
+          precisao
+        )} m). Vá para área aberta e tente novamente.`
       );
 
-      setStatusGps(`📡 Localização enviada: ${atualizadoEm}`);
+      return;
     }
 
+    setRastreamentoAutomatico(true);
+    setEnviandoGps(false);
+
+    await set(ref(db, `cargas/${codigo}/localizacao`), {
+      latitude,
+      longitude,
+      precisao,
+      velocidade,
+      atualizadoEm,
+      timestamp,
+    });
+
+    await push(ref(db, `cargas/${codigo}/trajeto`), {
+      latitude,
+      longitude,
+      precisao,
+      velocidade,
+      atualizadoEm,
+      timestamp,
+    });
+
+    const cargaSnapshot = await get(ref(db, `cargas/${codigo}`));
+    const cargaAtual = cargaSnapshot.exists() ? cargaSnapshot.val() : null;
+
+    if (!cargaAtual || cargaAtual?.entrega) {
+      buscarRastreamento();
+      return;
+    }
+
+    if (!cargaAtual?.dados?.rastreamentoIniciado) {
+      await set(ref(db, `cargas/${codigo}/dados/rastreamentoIniciado`), true);
+      await set(ref(db, `cargas/${codigo}/dados/gpsValidado`), true);
+      await set(
+        ref(db, `cargas/${codigo}/dados/rastreamentoIniciadoEm`),
+        atualizadoEm
+      );
+      await set(ref(db, `cargas/${codigo}/dados/status`), statusNovo);
+    }
+
+    await verificarSaidaOrigem(latitude, longitude, atualizadoEm);
+    await verificarGeofenceDestino(latitude, longitude, atualizadoEm);
+
+    setStatusGps(`📡 GPS ativo. Última posição enviada: ${atualizadoEm}`);
     buscarRastreamento();
   }
 
-  function enviarLocalizacao(statusNovo = "Em rota") {
-    if (!codigoRastreamento) {
+  function testarGpsEAtualizar(statusNovo = "Rastreamento iniciado") {
+    const codigo = codigoRastreamento.trim();
+
+    if (!codigo) {
       alert("Digite o código do rastreamento.");
       return;
     }
@@ -311,15 +310,14 @@ export default function MotoristaPage() {
     }
 
     setEnviandoGps(true);
-    setStatusGps("Solicitando localização...");
+    setStatusGps("Solicitando GPS...");
 
     navigator.geolocation.getCurrentPosition(
       async (posicao) => {
         await salvarLocalizacao(posicao, statusNovo);
-        setEnviandoGps(false);
       },
       (erro) => {
-        setStatusGps(`GPS indisponível nesta tentativa: ${erro.message}`);
+        setStatusGps(`GPS obrigatório. Erro: ${erro.message}`);
         setEnviandoGps(false);
       },
       {
@@ -330,9 +328,21 @@ export default function MotoristaPage() {
     );
   }
 
-  function iniciarRastreamentoAutomatico() {
-    if (!codigoRastreamento) {
+  async function iniciarRastreamentoAutomatico() {
+    const codigo = codigoRastreamento.trim();
+
+    if (!codigo) {
       alert("Digite o código do rastreamento.");
+      return;
+    }
+
+    if (!rastreamento) {
+      alert("Busque o rastreamento antes de iniciar.");
+      return;
+    }
+
+    if (rastreamento.entrega) {
+      alert("Esta entrega já foi finalizada.");
       return;
     }
 
@@ -341,20 +351,19 @@ export default function MotoristaPage() {
       return;
     }
 
-    if (watchIdRef.current !== null) {
-      navigator.geolocation.clearWatch(watchIdRef.current);
-      watchIdRef.current = null;
-    }
+    pararWatchGps();
 
-    setRastreamentoAutomatico(true);
-    setStatusGps("Rastreamento automático iniciado. Mantenha esta tela aberta.");
+    setEnviandoGps(true);
+    setStatusGps("Validando GPS obrigatório...");
 
     watchIdRef.current = navigator.geolocation.watchPosition(
       async (posicao) => {
-        await salvarLocalizacao(posicao, "Em rota");
+        await salvarLocalizacao(posicao, "Rastreamento iniciado");
       },
       (erro) => {
-        setStatusGps(`Erro no rastreamento GPS: ${erro.message}`);
+        setStatusGps(`GPS obrigatório. Erro: ${erro.message}`);
+        setEnviandoGps(false);
+        setRastreamentoAutomatico(false);
       },
       {
         enableHighAccuracy: true,
@@ -364,94 +373,49 @@ export default function MotoristaPage() {
     );
   }
 
-  function pararRastreamentoAutomatico() {
-    if (watchIdRef.current !== null && navigator.geolocation) {
-      navigator.geolocation.clearWatch(watchIdRef.current);
-      watchIdRef.current = null;
-    }
-
-    setRastreamentoAutomatico(false);
-  }
-
   async function finalizarEntrega() {
-    if (!codigoRastreamento) {
+    const codigo = codigoRastreamento.trim();
+
+    if (!codigo) {
       alert("Digite o código do rastreamento.");
       return;
     }
 
-    pararRastreamentoAutomatico();
+    const confirmar = window.confirm("Confirmar finalização manual da entrega?");
+    if (!confirmar) return;
 
     const entregueEm = new Date().toLocaleString("pt-BR");
 
-    await set(ref(db, `cargas/${codigoRastreamento}/entrega`), {
+    await set(ref(db, `cargas/${codigo}/entrega`), {
       recebedor: "Entrega finalizada pelo motorista",
       entregueEm,
       entregueEmMs: Date.now(),
       tipo: "manual_motorista",
     });
 
-    await set(ref(db, `cargas/${codigoRastreamento}/dados/status`), "Entregue");
+    await set(ref(db, `cargas/${codigo}/dados/status`), "Entregue");
+
+    pararWatchGps();
+    setRastreamentoAutomatico(false);
 
     alert("Entrega finalizada.");
     buscarRastreamento();
   }
 
-  async function aceitarCarga(carga) {
-    if (!nome || !localAtual) {
-      alert("Informe seu nome e local atual antes de aceitar uma carga.");
-      return;
-    }
-
-    const distancia = calcularDistancia(carga.localColeta, localAtual);
-
-    if (distancia > carga.raioMaximo) {
-      alert(
-        `Você está fora do raio permitido. Distância estimada: ${
-          distancia >= 9999 ? "desconhecida" : `${distancia} km`
-        }.`
-      );
-      return;
-    }
-
-    await set(ref(db, `cargas/${carga.id}/dados/motoristaAceito`), {
-      nome,
-      localAtual,
-      distancia,
-      aceitoEm: new Date().toLocaleString("pt-BR"),
-    });
-
-    await set(ref(db, `cargas/${carga.id}/dados/status`), "Aceita");
-
-    alert("Carga aceita com sucesso.");
-  }
-
-  const cargasComDistancia = cargas.map((carga) => {
-    const distancia =
-      localAtual.trim() !== ""
-        ? calcularDistancia(carga.localColeta, localAtual)
-        : null;
-
-    const dentroDoRaio =
-      distancia !== null ? distancia <= carga.raioMaximo : false;
-
-    return {
-      ...carga,
-      distancia,
-      dentroDoRaio,
-    };
-  });
+  const podeVerDestino = destinoLiberado();
 
   return (
     <main className="min-h-screen bg-slate-950 text-white p-6">
-      <div className="max-w-4xl mx-auto">
+      <div className="max-w-3xl mx-auto">
         <h1 className="text-3xl font-bold mb-2">Área do Motorista</h1>
 
         <p className="text-slate-300 mb-8">
-          Aceite cargas disponíveis ou inicie um rastreamento direto pelo código.
+          Digite o código da carga, ative o GPS obrigatório e acompanhe sua
+          rota até a entrega.
         </p>
 
         <section className="bg-slate-900 border border-slate-800 rounded-2xl p-5 mb-8">
-          <h2 className="text-xl font-semibold mb-4">Rastreamento direto</h2>
+          <h2 className="text-xl font-semibold mb-4">Buscar carga</h2>
 
           <div className="grid gap-4">
             <input
@@ -465,240 +429,190 @@ export default function MotoristaPage() {
               onClick={buscarRastreamento}
               className="bg-blue-600 hover:bg-blue-700 rounded-xl p-4 font-semibold"
             >
-              Buscar rastreamento
+              Buscar carga
             </button>
+          </div>
+        </section>
 
-            {rastreamento && (
-              <div className="bg-slate-800 rounded-xl p-4">
-                <p>
-                  <strong>Carga / Pedido:</strong>{" "}
-                  {rastreamento.numeroCarga || codigoRastreamento || "-"}
+        {rastreamento && (
+          <section className="bg-slate-900 border border-slate-800 rounded-2xl p-5">
+            <h2 className="text-xl font-semibold mb-4">Dados da carga</h2>
+
+            <div className="grid gap-2 bg-slate-800 rounded-xl p-4">
+              <p>
+                <strong>Carga / Pedido:</strong>{" "}
+                {rastreamento.numeroCarga || codigoRastreamento || "-"}
+              </p>
+
+              <p>
+                <strong>Cliente:</strong> {rastreamento.cliente || "-"}
+              </p>
+
+              <p>
+                <strong>Motorista:</strong> {rastreamento.motorista || "-"}
+              </p>
+
+              <p>
+                <strong>Placa:</strong> {rastreamento.placa || "-"}
+              </p>
+
+              <p>
+                <strong>Produto:</strong> {rastreamento.produto || "-"}
+              </p>
+
+              <p>
+                <strong>Origem:</strong> {rastreamento.origem || "-"}
+              </p>
+
+              <p>
+                <strong>Destino:</strong>{" "}
+                {podeVerDestino ? (
+                  rastreamento.destino || "-"
+                ) : (
+                  <span className="text-yellow-300">
+                    🔒 Protegido — ative o GPS para liberar
+                  </span>
+                )}
+              </p>
+
+              <p>
+                <strong>Status:</strong> {rastreamento.status || "-"}
+              </p>
+            </div>
+
+            {!podeVerDestino && !rastreamento.entrega && (
+              <div className="mt-4 bg-yellow-950 border border-yellow-700 rounded-xl p-4">
+                <p className="font-semibold text-yellow-300">
+                  GPS obrigatório
                 </p>
-
-                <p>
-                  <strong>Origem:</strong> {rastreamento.origem || "-"}
+                <p className="text-sm text-yellow-100 mt-1">
+                  Para acessar o endereço completo do destino, ative o
+                  rastreamento GPS. O destino só será liberado se o GPS tiver
+                  boa precisão.
                 </p>
+              </div>
+            )}
 
-                <p>
-                  <strong>Destino:</strong> {rastreamento.destino || "-"}
-                </p>
+            {rastreamento.entrega && (
+              <div className="mt-4 bg-green-900 border border-green-700 rounded-xl p-4">
+                <p className="font-semibold">Entrega concluída ✅</p>
+                <p className="text-sm mt-1">{rastreamento.entrega.recebedor}</p>
+                <p className="text-sm">{rastreamento.entrega.entregueEm}</p>
+              </div>
+            )}
 
-                <p>
-                  <strong>Status:</strong> {rastreamento.status || "-"}
-                </p>
+            <div className="grid gap-3 mt-5">
+              {!rastreamentoAutomatico && !rastreamento.entrega && (
+                <button
+                  onClick={iniciarRastreamentoAutomatico}
+                  disabled={enviandoGps}
+                  className="bg-green-600 hover:bg-green-700 rounded-xl p-4 font-semibold disabled:bg-slate-700"
+                >
+                  {enviandoGps
+                    ? "Validando GPS..."
+                    : "Ativar GPS e iniciar rastreamento"}
+                </button>
+              )}
 
-                {rastreamento.geofence?.entrouNoDestino && (
-                  <p className="text-green-300 mt-2">
-                    📍 Chegada ao destino detectada
+              {rastreamentoAutomatico && !rastreamento.entrega && (
+                <div className="bg-green-900 border border-green-700 rounded-xl p-4">
+                  <p className="font-semibold text-green-300">
+                    Rastreamento GPS ativo
                   </p>
-                )}
-
-                {rastreamento.entrega && (
-                  <div className="mt-3 bg-green-900 border border-green-700 rounded-xl p-3">
-                    <p className="font-semibold">Entrega concluída ✅</p>
-                    <p className="text-sm mt-1">
-                      {rastreamento.entrega.recebedor}
-                    </p>
-                    <p className="text-sm">{rastreamento.entrega.entregueEm}</p>
-                  </div>
-                )}
-
-                <div className="grid gap-3 mt-4">
-                  {!rastreamentoAutomatico ? (
-                    <button
-                      onClick={iniciarRastreamentoAutomatico}
-                      disabled={enviandoGps || !!rastreamento.entrega}
-                      className="bg-green-600 hover:bg-green-700 rounded-xl p-4 font-semibold disabled:bg-slate-700"
-                    >
-                      Iniciar rastreamento automático
-                    </button>
-                  ) : (
-                    <div className="bg-green-900 border border-green-700 rounded-xl p-4">
-                      <p className="font-semibold text-green-300">
-                        Rastreamento automático ativo
-                      </p>
-                      <p className="text-sm text-green-100 mt-1">
-                        A localização será enviada conforme o GPS detectar
-                        movimento. Para MVP web, mantenha esta tela aberta.
-                      </p>
-
-                      <button
-                        onClick={pararRastreamentoAutomatico}
-                        className="mt-3 bg-slate-700 hover:bg-slate-600 rounded-xl p-3 font-semibold"
-                      >
-                        Parar rastreamento
-                      </button>
-                    </div>
-                  )}
-
-                  <button
-                    onClick={() => enviarLocalizacao("Em rota")}
-                    disabled={enviandoGps || !!rastreamento.entrega}
-                    className="bg-blue-600 hover:bg-blue-700 rounded-xl p-4 font-semibold disabled:bg-slate-700"
-                  >
-                    Atualizar localização agora
-                  </button>
-
-                  <button
-                    onClick={finalizarEntrega}
-                    disabled={!!rastreamento.entrega}
-                    className="bg-red-600 hover:bg-red-700 rounded-xl p-4 font-semibold disabled:bg-slate-700"
-                  >
-                    Finalizar entrega
-                  </button>
+                  <p className="text-sm text-green-100 mt-1">
+                    O rastreamento permanecerá ativo até a entrega ser
+                    concluída. Não feche esta tela durante o trajeto.
+                  </p>
                 </div>
+              )}
 
-                {statusGps && (
-                  <p className="text-sm text-slate-300 mt-3">{statusGps}</p>
-                )}
+              <button
+                onClick={() => testarGpsEAtualizar("Rastreamento iniciado")}
+                disabled={enviandoGps || !!rastreamento.entrega}
+                className="bg-blue-600 hover:bg-blue-700 rounded-xl p-4 font-semibold disabled:bg-slate-700"
+              >
+                Atualizar GPS agora
+              </button>
 
-                {distanciaDestinoAtual !== null && (
-                  <p className="text-sm text-yellow-300 mt-2">
-                    Distância até destino:{" "}
-                    {distanciaDestinoAtual < 1000
-                      ? `${Math.round(distanciaDestinoAtual)} m`
-                      : `${(distanciaDestinoAtual / 1000).toFixed(2)} km`}
+              <button
+                onClick={finalizarEntrega}
+                disabled={!!rastreamento.entrega}
+                className="bg-red-600 hover:bg-red-700 rounded-xl p-4 font-semibold disabled:bg-slate-700"
+              >
+                Finalizar entrega
+              </button>
+            </div>
+
+            {statusGps && (
+              <p className="text-sm text-slate-300 mt-4">{statusGps}</p>
+            )}
+
+            {distanciaOrigemAtual !== null && (
+              <p className="text-sm text-blue-300 mt-2">
+                Distância da origem:{" "}
+                {distanciaOrigemAtual < 1000
+                  ? `${Math.round(distanciaOrigemAtual)} m`
+                  : `${(distanciaOrigemAtual / 1000).toFixed(2)} km`}
+              </p>
+            )}
+
+            {distanciaDestinoAtual !== null && (
+              <p className="text-sm text-yellow-300 mt-2">
+                Distância até destino:{" "}
+                {distanciaDestinoAtual < 1000
+                  ? `${Math.round(distanciaDestinoAtual)} m`
+                  : `${(distanciaDestinoAtual / 1000).toFixed(2)} km`}
+              </p>
+            )}
+
+            {rastreamento.linkClienteLiberado && (
+              <div className="mt-4 bg-blue-950 border border-blue-700 rounded-xl p-4">
+                <p className="font-semibold text-blue-300">
+                  Link do cliente liberado
+                </p>
+                <p className="text-sm break-all mt-1">
+                  /acompanhar/{codigoRastreamento.trim()}
+                </p>
+              </div>
+            )}
+
+            {ultimaLatitude !== null && ultimaLongitude !== null && (
+              <div className="text-xs text-slate-400 mt-4 bg-slate-950 rounded-xl p-3">
+                <p>
+                  Última latitude:{" "}
+                  <span className="text-slate-200">
+                    {ultimaLatitude.toFixed(6)}
+                  </span>
+                </p>
+
+                <p>
+                  Última longitude:{" "}
+                  <span className="text-slate-200">
+                    {ultimaLongitude.toFixed(6)}
+                  </span>
+                </p>
+
+                {ultimaPrecisao !== null && (
+                  <p>
+                    Precisão do GPS:{" "}
+                    <span className="text-slate-200">
+                      {Math.round(ultimaPrecisao)} m
+                    </span>
                   </p>
                 )}
 
-                {ultimaLatitude !== null && ultimaLongitude !== null && (
-                  <div className="text-xs text-slate-400 mt-3 bg-slate-900 rounded-xl p-3">
-                    <p>
-                      Última latitude:{" "}
-                      <span className="text-slate-200">
-                        {ultimaLatitude.toFixed(6)}
-                      </span>
-                    </p>
-                    <p>
-                      Última longitude:{" "}
-                      <span className="text-slate-200">
-                        {ultimaLongitude.toFixed(6)}
-                      </span>
-                    </p>
-
-                    {ultimaPrecisao !== null && (
-                      <p>
-                        Precisão do GPS:{" "}
-                        <span className="text-slate-200">
-                          {Math.round(ultimaPrecisao)} m
-                        </span>
-                      </p>
-                    )}
-
-                    {ultimaVelocidade !== null && (
-                      <p>
-                        Velocidade aproximada:{" "}
-                        <span className="text-slate-200">
-                          {(ultimaVelocidade * 3.6).toFixed(1)} km/h
-                        </span>
-                      </p>
-                    )}
-                  </div>
+                {ultimaVelocidade !== null && (
+                  <p>
+                    Velocidade aproximada:{" "}
+                    <span className="text-slate-200">
+                      {(ultimaVelocidade * 3.6).toFixed(1)} km/h
+                    </span>
+                  </p>
                 )}
               </div>
             )}
-          </div>
-        </section>
-
-        <section className="bg-slate-900 border border-slate-800 rounded-2xl p-5 mb-8">
-          <h2 className="text-xl font-semibold mb-4">Meus dados</h2>
-
-          <div className="grid gap-4">
-            <input
-              className="p-3 rounded-xl bg-slate-800 border border-slate-700 outline-none"
-              placeholder="Seu nome. Ex: João"
-              value={nome}
-              onChange={(e) => setNome(e.target.value)}
-            />
-
-            <input
-              className="p-3 rounded-xl bg-slate-800 border border-slate-700 outline-none"
-              placeholder="Seu local atual. Ex: São José dos Pinhais"
-              value={localAtual}
-              onChange={(e) => setLocalAtual(e.target.value)}
-            />
-          </div>
-        </section>
-
-        <section>
-          <h2 className="text-xl font-semibold mb-4">Cargas disponíveis</h2>
-
-          {cargasComDistancia.length === 0 ? (
-            <p className="text-slate-400">Nenhuma carga disponível.</p>
-          ) : (
-            <div className="grid gap-4">
-              {cargasComDistancia.map((carga) => (
-                <div
-                  key={carga.id}
-                  className="bg-slate-900 border border-slate-800 rounded-2xl p-5"
-                >
-                  <p className="text-lg font-bold">
-                    {carga.origem} → {carga.destino}
-                  </p>
-
-                  <p className="text-slate-300 mt-2">
-                    Local de coleta: {carga.localColeta}
-                  </p>
-
-                  <p className="text-slate-300">
-                    Raio aceito pela empresa:{" "}
-                    {Number(carga.raioMaximo) >= 9999
-                      ? "Sem limite"
-                      : `${carga.raioMaximo || 30} km`}
-                  </p>
-
-                  {localAtual && (
-                    <p className="mt-3">
-                      Sua distância estimada:{" "}
-                      <span
-                        className={
-                          carga.dentroDoRaio ? "text-green-400" : "text-red-400"
-                        }
-                      >
-                        {carga.distancia >= 9999
-                          ? "não encontrada"
-                          : `${carga.distancia} km`}
-                      </span>
-                    </p>
-                  )}
-
-                  <p className="mt-2">
-                    Status:{" "}
-                    <span
-                      className={
-                        carga.status === "Disponível"
-                          ? "text-green-400"
-                          : "text-yellow-400"
-                      }
-                    >
-                      {carga.status || "Disponível"}
-                    </span>
-                  </p>
-
-                  {carga.motoristaAceito && (
-                    <p className="text-blue-300 mt-2">
-                      Aceita por: {carga.motoristaAceito.nome}
-                    </p>
-                  )}
-
-                  <button
-                    onClick={() => aceitarCarga(carga)}
-                    disabled={carga.status !== "Disponível"}
-                    className={`mt-4 rounded-xl px-4 py-3 font-semibold ${
-                      carga.status === "Disponível"
-                        ? "bg-green-600 hover:bg-green-700"
-                        : "bg-slate-700 cursor-not-allowed"
-                    }`}
-                  >
-                    {carga.status === "Disponível"
-                      ? "Aceitar carga"
-                      : "Carga indisponível"}
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
-        </section>
+          </section>
+        )}
       </div>
     </main>
   );
