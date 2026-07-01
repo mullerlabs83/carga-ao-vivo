@@ -257,15 +257,50 @@ export default function Admin() {
   }, [cargaSelecionada, listaCargas]);
 
   function motoristaEstaOnline(carga) {
-    const ultimaAtualizacao =
-      carga.localizacao?.timestamp ||
-      carga.localizacao?.atualizadoEmMs ||
-      carga.localizacao?.ultimaAtualizacao;
+  const ultimaAtualizacao =
+    carga?.localizacao?.timestamp ||
+    carga?.localizacao?.atualizadoEmMs ||
+    carga?.localizacao?.ultimaAtualizacao;
 
-    if (!ultimaAtualizacao) return false;
+  if (!ultimaAtualizacao) return false;
 
-    return Date.now() - Number(ultimaAtualizacao) <= 2 * 60 * 1000;
+  return Date.now() - Number(ultimaAtualizacao) <= 2 * 60 * 1000;
+}
+
+function motoristaOfflineHa5Min(carga) {
+  const ultimaAtualizacao =
+    carga?.localizacao?.timestamp ||
+    carga?.localizacao?.atualizadoEmMs ||
+    carga?.localizacao?.ultimaAtualizacao;
+
+  if (!ultimaAtualizacao) return false;
+
+  return Date.now() - Number(ultimaAtualizacao) > 5 * 60 * 1000;
+}
+
+async function copiarLinkCliente(codigo) {
+  const link = `${window.location.origin}/acompanhar/${codigo}`;
+
+  await navigator.clipboard.writeText(link);
+
+  alert("Link do cliente copiado.");
+}
+
+function abrirWhatsappCliente(carga) {
+  if (!carga?.telefoneCliente) {
+    alert("Cliente sem telefone cadastrado.");
+    return;
   }
+
+  const numero = carga.telefoneCliente.replace(/\D/g, "");
+  const link = `${window.location.origin}/acompanhar/${carga.codigo}`;
+
+  const mensagem = encodeURIComponent(
+    `Olá! Sua carga saiu para entrega 🚚\n\nAcompanhe em tempo real pelo link:\n${link}`
+  );
+
+  window.open(`https://wa.me/55${numero}?text=${mensagem}`, "_blank");
+}
 
   function gerarCodigoCarga() {
     return String(Date.now());
@@ -500,10 +535,18 @@ export default function Admin() {
         </p>
 
         {carga.localizacao && !historico && (
-          <p className="mt-2 text-sm">
-            {motoristaEstaOnline(carga) ? "🟢 GPS online" : "🔴 GPS offline"}
-          </p>
-        )}
+  <div className="mt-2 text-sm">
+    {motoristaOfflineHa5Min(carga) ? (
+      <p className="text-red-400 font-bold">
+        ⚠ Motorista offline há mais de 5 min
+      </p>
+    ) : motoristaEstaOnline(carga) ? (
+      <p className="text-green-400">🟢 GPS online</p>
+    ) : (
+      <p className="text-yellow-400">🟡 Sem atualização recente</p>
+    )}
+  </div>
+)}
 
         {carga.geofence?.ativa && !historico && (
           <p className="mt-1 text-sm text-green-300">🟢 Geofence ativa</p>
@@ -830,18 +873,36 @@ export default function Admin() {
                   <strong>Placa:</strong> {cargaAtual.placa || "-"}
                 </p>
 
-                <p>
-                  <strong>Link cliente:</strong>{" "}
-                  {cargaAtual.linkClienteLiberado ? (
-                    <span className="text-green-300">
-                      /acompanhar/{cargaSelecionada}
-                    </span>
-                  ) : (
-                    <span className="text-yellow-300">
-                      Aguardando sair 2 km da origem
-                    </span>
-                  )}
-                </p>
+                <div>
+  <strong>Link cliente:</strong>{" "}
+  {cargaAtual.linkClienteLiberado ? (
+    <div className="mt-2">
+      <p className="text-green-300 break-all">
+        /acompanhar/{cargaSelecionada}
+      </p>
+
+      <div className="flex flex-wrap gap-2 mt-3">
+        <button
+          onClick={() => copiarLinkCliente(cargaSelecionada)}
+          className="bg-blue-600 hover:bg-blue-700 rounded-xl px-3 py-2 text-sm"
+        >
+          Copiar link
+        </button>
+
+        <button
+          onClick={() => abrirWhatsappCliente(cargaAtual)}
+          className="bg-green-600 hover:bg-green-700 rounded-xl px-3 py-2 text-sm"
+        >
+          Enviar WhatsApp
+        </button>
+      </div>
+    </div>
+  ) : (
+    <span className="text-yellow-300">
+      Aguardando sair 2 km da origem
+    </span>
+  )}
+</div>
               </div>
             )}
 

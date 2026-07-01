@@ -26,11 +26,11 @@ export default function AcompanharCarga() {
   const [geofence, setGeofence] = useState(null);
   const [carregando, setCarregando] = useState(true);
 
- useEffect(() => {
-  if (!codigo) {
-    setCarregando(false);
-    return;
-  }
+  useEffect(() => {
+    if (!codigo) {
+      setCarregando(false);
+      return;
+    }
 
     const dadosRef = ref(db, `cargas/${codigo}/dados`);
     const localizacaoRef = ref(db, `cargas/${codigo}/localizacao`);
@@ -38,18 +38,18 @@ export default function AcompanharCarga() {
     const entregaRef = ref(db, `cargas/${codigo}/entrega`);
     const geofenceRef = ref(db, `cargas/${codigo}/geofence`);
 
-  const stopDados = onValue(
-  dadosRef,
-  (snapshot) => {
-    setDadosCarga(snapshot.exists() ? snapshot.val() : null);
-    setCarregando(false);
-  },
-  (error) => {
-    console.error("Erro ao carregar dados da carga:", error);
-    setDadosCarga(null);
-    setCarregando(false);
-  }
-);
+    const stopDados = onValue(
+      dadosRef,
+      (snapshot) => {
+        setDadosCarga(snapshot.exists() ? snapshot.val() : null);
+        setCarregando(false);
+      },
+      (error) => {
+        console.error(error);
+        setDadosCarga(null);
+        setCarregando(false);
+      }
+    );
 
     const stopLocalizacao = onValue(localizacaoRef, (snapshot) => {
       setLocalizacao(snapshot.exists() ? snapshot.val() : null);
@@ -76,17 +76,25 @@ export default function AcompanharCarga() {
     };
   }, [codigo]);
 
+  const clientePodeAcompanhar =
+    dadosCarga?.linkClienteLiberado || !!entrega;
+
   const statusAtual = entrega
     ? "Entregue"
     : geofence?.entrouNoDestino
     ? "Chegou ao destino"
-    : dadosCarga?.status || "Aguardando rastreamento";
+    : dadosCarga?.status || "Aguardando";
 
   const etapas = [
-    { nome: "Carga cadastrada", ativa: !!dadosCarga },
     {
-      nome: "Aguardando coleta",
+      nome: "Carga cadastrada",
       ativa: !!dadosCarga,
+    },
+    {
+      nome: "Motorista designado",
+      ativa:
+        dadosCarga?.status !== "Cadastrada" ||
+        !!dadosCarga?.motorista,
     },
     {
       nome: "Em rota",
@@ -97,7 +105,9 @@ export default function AcompanharCarga() {
     },
     {
       nome: "Chegou ao destino",
-      ativa: statusAtual === "Chegou ao destino" || statusAtual === "Entregue",
+      ativa:
+        statusAtual === "Chegou ao destino" ||
+        statusAtual === "Entregue",
     },
     {
       nome: "Entregue",
@@ -120,9 +130,10 @@ export default function AcompanharCarga() {
           </div>
         ) : !dadosCarga ? (
           <div className="bg-red-900 rounded-2xl p-6">
-            <h2 className="text-2xl font-bold mb-2">Carga não encontrada</h2>
-            <p>Confira se o link ou código está correto.</p>
-            <p className="text-sm mt-3 break-all">Código: {codigo}</p>
+            <h2 className="text-2xl font-bold mb-2">
+              Carga não encontrada
+            </h2>
+            <p>Confira se o link está correto.</p>
           </div>
         ) : (
           <>
@@ -141,22 +152,6 @@ export default function AcompanharCarga() {
                 {dadosCarga.transportadoraResponsavel ||
                   dadosCarga.cliente ||
                   "-"}
-              </p>
-
-              <p>
-                <strong>Origem:</strong> {dadosCarga.origem || "-"}
-              </p>
-
-              <p>
-                <strong>Destino:</strong> {dadosCarga.destino || "-"}
-              </p>
-
-              <p>
-                <strong>Motorista:</strong> {dadosCarga.motorista || "-"}
-              </p>
-
-              <p>
-                <strong>Placa:</strong> {dadosCarga.placa || "-"}
               </p>
 
               <p>
@@ -197,9 +192,20 @@ export default function AcompanharCarga() {
                   <strong>Horário:</strong> {entrega.entregueEm || "-"}
                 </p>
               </section>
+            ) : !clientePodeAcompanhar ? (
+              <section className="bg-blue-950 rounded-2xl p-6">
+                <h2 className="text-2xl font-bold mb-3">
+                  Sua carga está em preparação
+                </h2>
+
+                <p className="text-blue-100">
+                  O rastreamento será liberado automaticamente assim que o
+                  veículo iniciar a rota de entrega.
+                </p>
+              </section>
             ) : !localizacao ? (
               <section className="bg-slate-900 rounded-2xl p-6">
-                <p>Aguardando início do rastreamento...</p>
+                <p>Aguardando atualização de localização...</p>
               </section>
             ) : (
               <section className="bg-slate-900 rounded-2xl p-4">
@@ -215,7 +221,7 @@ export default function AcompanharCarga() {
 
                   {geofence?.entrouNoDestino && (
                     <p className="text-yellow-300 mt-2">
-                      📍 Caminhão chegou ao destino
+                      📍 Seu pedido chegou ao destino
                     </p>
                   )}
                 </div>
